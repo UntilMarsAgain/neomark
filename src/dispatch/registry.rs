@@ -6,6 +6,17 @@ use regex::Regex;
 
 use super::handler::{Fallback, Handler};
 
+/// 一次按名查找的结果：展开器 + [命中信息](crate::dispatch::Matched)。
+///
+/// 两个生命周期分别是注册表的借用（`'r`）与调用名的借用（`'h`）——`Captures`
+/// 借用调用名，而展开器借用注册表，两者互不相干。
+pub struct Found<'r, 'h> {
+    /// 命中的展开器。
+    pub handler: &'r dyn Handler,
+    /// 正则命中信息；精确名命中时为 `None`。
+    pub captures: Option<regex::Captures<'h>>,
+}
+
 /// 一条**正则模式**注册。
 struct Pattern {
     regex: Regex,
@@ -77,10 +88,12 @@ impl Registry {
     /// use neomark::{Registry, handlers};
     /// use regex::Regex;
     ///
+    /// // 一条模式覆盖 h1 ~ h6，标签与类名都由命中信息算出来
+    /// let headings = handlers::Wrap::tag_from(|m: &neomark::Matched| m.matched().to_string())
+    ///     .class_from(|m: &neomark::Matched| format!("nm-{}", m.matched()));
+    ///
     /// let mut registry = Registry::new();
-    /// handlers::register_defaults(&mut registry);
-    /// // 一条模式覆盖 h1 ~ h6
-    /// registry.register_pattern(Regex::new("^h[1-6]$").unwrap(), handlers::Headings::default());
+    /// registry.register_pattern(Regex::new("^h[1-6]$").unwrap(), headings);
     /// ```
     pub fn register_pattern(
         &mut self,
@@ -118,15 +131,28 @@ impl Registry {
 
     /// 按调用名查找展开器：精确优先，其次正则（后注册的优先）。
     pub fn get(&self, name: &str) -> Option<&dyn Handler> {
+        self.find(name).map(|found| found.handler)
+    }
+
+    /// 按调用名查找展开器，**连同正则的命中信息**。
+    ///
+    /// [`Registry::get`] 只是它的简化形式。需要捕获组的展开器要用这个：
+    /// 返回的 `Captures` 借用 `name`，所以调用方通常得先把名字复制成局部变量，
+    /// 这样它和 `&mut Ast` 才不冲突。
+    pub fn find<'r, 'h>(&'r self, name: &'h str) -> Option<Found<'r, 'h>> {
         if let Some(handler) = self.handlers.get(name) {
-            return Some(handler.as_ref());
+            return Some(Found {
+                handler: handler.as_ref(),
+                captures: None,
+            });
         }
 
-        self.patterns
-            .iter()
-            .rev()
-            .find(|entry| entry.regex.is_match(name))
-            .map(|entry| entry.handler.as_ref())
+        self.patterns.iter().rev().find_map(|entry| {
+            entry.regex.captures(name).map(|captures| Found {
+                handler: entry.handler.as_ref(),
+                captures: Some(captures),
+            })
+        })
     }
 
     /// 自然块展开器；没注册过时为 `None`。

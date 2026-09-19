@@ -15,7 +15,7 @@
 //! 展开器产出的是**语义节点**，不是 HTML——标签与类名是渲染器的事。
 //!
 //! ```
-//! use neomark::{Ast, Context, Handler, NodeId};
+//! use neomark::{Ast, Context, Handler, Matched, NodeId};
 //!
 //! struct Notice;
 //!
@@ -25,6 +25,7 @@
 //!         node: NodeId,
 //!         ast: &mut Ast,
 //!         _ctx: &mut Context<'_>,
+//!         _matched: &Matched<'_>,
 //!     ) -> Vec<NodeId> {
 //!         let params = ast.call(node).unwrap().params.clone();
 //!         let instance = ast.new_instance("notice", params);
@@ -36,6 +37,9 @@
 //!     }
 //! }
 //! ```
+//!
+//! `matched` 里带着完整调用名、正则**实际匹配到**的那一段、以及各捕获组；
+//! 自然块没有名字，所以 `expand_natural` 不收这个参数。
 //!
 //! 展开是自上而下的：展开器返回的子树决定了它原有的子节点会被访问到什么
 //! 程度。像 `::code` 那样**不搬运**子节点，内层就永远不会被展开——调度器
@@ -49,8 +53,10 @@
 
 mod dispatcher;
 mod handler;
+mod matched;
 mod registry;
 
 pub use dispatcher::Dispatcher;
 pub use handler::{Context, Fallback, Handler};
-pub use registry::Registry;
+pub use matched::Matched;
+pub use registry::{Found, Registry};

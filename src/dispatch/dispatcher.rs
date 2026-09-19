@@ -1,6 +1,7 @@
 //! 调度器：把未展开的块推进到不动点。
 
-use super::handler::{Context, Handler};
+use super::handler::Context;
+use super::matched::Matched;
 use super::registry::Registry;
 use crate::ast::{Ast, KindTag, NodeId};
 
@@ -64,8 +65,32 @@ impl Dispatcher {
             return;
         }
 
-        let handler = self.handler_for(ast, node);
-        let replacement = handler.expand(node, ast, ctx);
+        // 名字先复制成局部变量：`Captures` 借用 haystack，而 haystack 原本住在
+        // `Ast` 里——展开器同时还要 `&mut Ast`，借用检查不允许两者并存。
+        let name = match ast.tag(node) {
+            Some(KindTag::Call) => ast.call(node).map(|call| call.name.clone()),
+            _ => None,
+        };
+
+        let replacement = match name.as_deref().and_then(|name| self.registry.find(name)) {
+            // 按名命中：把命中信息（含捕获组）交给展开器。
+            Some(found) => {
+                let matched = Matched::new(name.as_deref().unwrap_or_default(), found.captures);
+                found.handler.expand(node, ast, ctx, &matched)
+            }
+            // 自然块与兜底：自然块没有名字。
+            None => {
+                let handler = match ast.tag(node) {
+                    Some(KindTag::Natural) => self
+                        .registry
+                        .natural()
+                        .unwrap_or_else(|| self.registry.fallback()),
+                    _ => self.registry.fallback(),
+                };
+                handler.expand(node, ast, ctx, &Matched::unnamed())
+            }
+        };
+
         self.splice(ast, node, replacement, ctx);
     }
 
@@ -75,12 +100,12 @@ impl Dispatcher {
     /// 交给渲染器按名字解释。`{{smile}}` / `:smile:` 就是这条路——emoji 表
     /// 属于渲染器，不认识的名字原样回显。
     fn expand_inline_call(&self, ast: &mut Ast, node: NodeId, ctx: &mut Context<'_>) {
-        let handler = ast
-            .inline_call(node)
-            .and_then(|(name, _, _)| self.registry.get(name));
+        let name = ast.inline_call(node).map(|(name, _, _)| name.to_string());
+        let found = name.as_deref().and_then(|name| self.registry.find(name));
 
-        if let Some(handler) = handler {
-            let replacement = handler.expand(node, ast, ctx);
+        if let Some(found) = found {
+            let matched = Matched::new(name.as_deref().unwrap_or_default(), found.captures);
+            let replacement = found.handler.expand(node, ast, ctx, &matched);
             self.splice(ast, node, replacement, ctx);
             return;
         }
@@ -108,21 +133,6 @@ impl Dispatcher {
             self.expand_node(ast, next, ctx);
         }
     }
-
-    /// 为未展开节点挑展开器：没命中就用兜底。
-    fn handler_for<'a>(&'a self, ast: &Ast, node: NodeId) -> &'a dyn Handler {
-        match ast.tag(node) {
-            Some(KindTag::Call) => ast
-                .call(node)
-                .and_then(|call| self.registry.get(&call.name))
-                .unwrap_or_else(|| self.registry.fallback()),
-            Some(KindTag::Natural) => self
-                .registry
-                .natural()
-                .unwrap_or_else(|| self.registry.fallback()),
-            _ => self.registry.fallback(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -130,6 +140,7 @@ mod tests {
     use super::*;
     use crate::ast::test_util::sexpr;
     use crate::ast::{Attr, ErrorKind, ErrorNode, Span};
+    use crate::dispatch::Handler;
     use crate::handlers::NaturalExpander as RealNaturalExpander;
     use crate::parse::parse;
 
@@ -139,7 +150,13 @@ mod tests {
     struct NoticeHandler;
 
     impl Handler for NoticeHandler {
-        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+        fn expand_call(
+            &self,
+            node: NodeId,
+            ast: &mut Ast,
+            _ctx: &mut Context<'_>,
+            _matched: &Matched<'_>,
+        ) -> Vec<NodeId> {
             let (name, params) = {
                 let call = ast.call(node).unwrap();
                 (call.name.clone(), call.params.clone())
@@ -161,7 +178,13 @@ mod tests {
     struct RawElementHandler;
 
     impl Handler for RawElementHandler {
-        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+        fn expand_call(
+            &self,
+            node: NodeId,
+            ast: &mut Ast,
+            _ctx: &mut Context<'_>,
+            _matched: &Matched<'_>,
+        ) -> Vec<NodeId> {
             let aside = ast.new_element("aside", vec![Attr::new("class", "tip")]);
             for child in ast.children(node).collect::<Vec<_>>() {
                 ast.append(aside, child);
@@ -182,6 +205,7 @@ mod tests {
             node: NodeId,
             ast: &mut Ast,
             _ctx: &mut Context<'_>,
+            _matched: &Matched<'_>,
         ) -> Vec<NodeId> {
             let (name, params, _) = ast.inline_call(node).unwrap();
             let (name, params) = (name.to_string(), params.clone());
@@ -198,7 +222,13 @@ mod tests {
     struct Marker(&'static str);
 
     impl Handler for Marker {
-        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+        fn expand_call(
+            &self,
+            node: NodeId,
+            ast: &mut Ast,
+            _ctx: &mut Context<'_>,
+            _matched: &Matched<'_>,
+        ) -> Vec<NodeId> {
             let name = ast.call(node).unwrap().name.clone();
             let text = ast.new_text(format!("{}:{name}", self.0));
             vec![text]
@@ -227,7 +257,13 @@ mod tests {
     struct VerbatimHandler;
 
     impl Handler for VerbatimHandler {
-        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+        fn expand_call(
+            &self,
+            node: NodeId,
+            ast: &mut Ast,
+            _ctx: &mut Context<'_>,
+            _matched: &Matched<'_>,
+        ) -> Vec<NodeId> {
             let (name, params, raw) = {
                 let call = ast.call(node).unwrap();
                 (
@@ -248,7 +284,13 @@ mod tests {
     struct SplitHandler;
 
     impl Handler for SplitHandler {
-        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+        fn expand_call(
+            &self,
+            node: NodeId,
+            ast: &mut Ast,
+            _ctx: &mut Context<'_>,
+            _matched: &Matched<'_>,
+        ) -> Vec<NodeId> {
             let (name, raw) = {
                 let call = ast.call(node).unwrap();
                 (call.name.clone(), call.raw_body.clone())
@@ -264,7 +306,13 @@ mod tests {
     struct PickyHandler;
 
     impl Handler for PickyHandler {
-        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+        fn expand_call(
+            &self,
+            node: NodeId,
+            ast: &mut Ast,
+            _ctx: &mut Context<'_>,
+            _matched: &Matched<'_>,
+        ) -> Vec<NodeId> {
             let call = ast.call(node).unwrap();
             let (span, raw) = (call.span, call.raw_body.clone());
 

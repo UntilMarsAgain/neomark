@@ -1,5 +1,6 @@
 //! 展开器接口与展开上下文。
 
+use super::matched::Matched;
 use crate::ast::{Ast, ErrorKind, ErrorNode, KindTag, NodeId, Span};
 
 /// 一个块展开器。
@@ -14,19 +15,35 @@ use crate::ast::{Ast, ErrorKind, ErrorNode, KindTag, NodeId, Span};
 /// 返回值是**替换该节点的兄弟序列**：返回空表示整块丢弃，返回一个表示替换成
 /// 一个节点，返回多个表示展开成多个兄弟节点。返回的节点里若仍含未展开的块，
 /// 调度器会继续推进。
+///
+/// **按名分发的那两个方法会收到 [`Matched`]**：里面有完整调用名、正则实际匹配
+/// 到的那一段，以及各捕获组。自然块没有名字，所以
+/// [`expand_natural`](Handler::expand_natural) 不收这个参数。
 pub trait Handler {
     /// 展开一个未展开的节点。默认按种类分发到下面三个方法。
-    fn expand(&self, node: NodeId, ast: &mut Ast, ctx: &mut Context<'_>) -> Vec<NodeId> {
+    fn expand(
+        &self,
+        node: NodeId,
+        ast: &mut Ast,
+        ctx: &mut Context<'_>,
+        matched: &Matched<'_>,
+    ) -> Vec<NodeId> {
         match ast.tag(node) {
-            Some(KindTag::Call) => self.expand_call(node, ast, ctx),
-            Some(KindTag::InlineCall) => self.expand_inline(node, ast, ctx),
+            Some(KindTag::Call) => self.expand_call(node, ast, ctx, matched),
+            Some(KindTag::InlineCall) => self.expand_inline(node, ast, ctx, matched),
             Some(KindTag::Natural) => self.expand_natural(node, ast, ctx),
             _ => Vec::new(),
         }
     }
 
     /// 展开一个调用块。默认产出报错节点。
-    fn expand_call(&self, node: NodeId, ast: &mut Ast, ctx: &mut Context<'_>) -> Vec<NodeId> {
+    fn expand_call(
+        &self,
+        node: NodeId,
+        ast: &mut Ast,
+        ctx: &mut Context<'_>,
+        _matched: &Matched<'_>,
+    ) -> Vec<NodeId> {
         let Some(call) = ast.call(node) else {
             return Vec::new();
         };
@@ -45,7 +62,13 @@ pub trait Handler {
     ///
     /// 注意调度器**只在名字有注册展开器时**才会走到这里。名字没有展开器的
     /// 行内调用会保持原样，交给渲染器按名字解释——emoji 走的就是那条路。
-    fn expand_inline(&self, node: NodeId, ast: &mut Ast, ctx: &mut Context<'_>) -> Vec<NodeId> {
+    fn expand_inline(
+        &self,
+        node: NodeId,
+        ast: &mut Ast,
+        ctx: &mut Context<'_>,
+        _matched: &Matched<'_>,
+    ) -> Vec<NodeId> {
         let Some((name, _, span)) = ast.inline_call(node) else {
             return Vec::new();
         };

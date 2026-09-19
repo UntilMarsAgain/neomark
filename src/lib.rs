@@ -26,6 +26,9 @@
 //!
 //! 都没命中时用兜底展开器（默认产出报错节点）。
 //!
+//! 按名分发时，展开器会收到 [`Matched`]：完整调用名、正则**实际匹配到**的那
+//! 一段、以及各捕获组。所以一条 `^h[1-6]$` 注册的包装器能知道自己是 `h3`。
+//!
 //! [`NaturalExpander`] 是自然块展开器，**同时是一个可直接调用的接口**：
 //! 其他展开器或外部解析器要「把这段文本当自然块解析」时直接调它的
 //! [`block`](NaturalExpander::block) / [`inline`](NaturalExpander::inline)，
@@ -92,7 +95,7 @@ pub use ast::{
     Ast, Attr, Block, CallBlock, ErrorKind, ErrorNode, KindTag, NaturalBlock, NodeId, NodeKind,
     Params, Span,
 };
-pub use dispatch::{Context, Dispatcher, Fallback, Handler, Registry};
-pub use handlers::{Headings, NaturalExpander, Wrap};
+pub use dispatch::{Context, Dispatcher, Fallback, Found, Handler, Matched, Registry};
+pub use handlers::{NaturalExpander, Wrap};
 pub use inline::Options;
 pub use parse::{CallHeader, parse, parse_call_header};

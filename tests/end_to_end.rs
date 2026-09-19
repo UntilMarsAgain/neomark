@@ -2,7 +2,7 @@
 //!
 //! 这里只用公共 API，模拟外部使用者。
 
-use neomark::{Context, Dispatcher, Registry, handlers, html, parse};
+use neomark::{Context, Dispatcher, Matched, Registry, handlers, html, parse};
 use regex::Regex;
 
 fn render(source: &str) -> String {
@@ -327,6 +327,46 @@ fn a_wrapper_still_expands_nested_blocks() {
         html,
         "<section class=\"box\"><h2 class=\"nm-h2\">标题</h2></section>"
     );
+}
+
+#[test]
+fn a_wrapper_can_read_capture_groups() {
+    // 捕获组也是能拿到的：`::badge-new` 的样式由 `(?P<kind>…)` 决定，
+    // 它匹配到的是 `new`（不是整名 `badge-new`）。
+    let html = render_with("::badge-new: 新", |registry| {
+        registry.register_pattern(
+            Regex::new("^badge-(?P<kind>[a-z]+)$").unwrap(),
+            handlers::Wrap::tag("span")
+                .class("badge")
+                .class_from(|m: &Matched| m.capture_named("kind").unwrap_or_default().to_string())
+                .inline(handlers::NaturalExpander::default()),
+        );
+    });
+
+    assert_eq!(html, "<span class=\"badge new\">新</span>");
+}
+
+#[test]
+fn an_unanchored_pattern_can_tell_what_actually_matched() {
+    // 模式只锚了中间：`h[1-6]` 会命中 `xh3y`，此时**整名**（xh3y）与
+    // **实际匹配到的片段**（h3）不是一回事。
+    let html = render_with("::xh3y: 正文", |registry| {
+        registry.register_pattern(
+            Regex::new("h[1-6]").unwrap(),
+            handlers::Wrap::tag_from(|m: &Matched| m.matched().to_string())
+                .inline(handlers::NaturalExpander::default()),
+        );
+    });
+
+    // 标签取实际匹配到的 `h3`，而不是整名
+    assert_eq!(html, "<h3>正文</h3>");
+}
+
+#[test]
+fn headings_really_are_just_a_wrapper_now() {
+    // 与 `headings_are_registered_through_a_wildcard_pattern` 一对照：输出完全
+    // 相同，但内置实现里已经没有任何专门的标题展开器了。
+    assert_eq!(render("::h3: 三级"), "<h3 class=\"nm-h3\">三级</h3>");
 }
 
 #[test]
