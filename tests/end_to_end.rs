@@ -253,7 +253,7 @@ fn names_keys_and_values_may_all_be_quoted() {
 
 #[test]
 fn headings_are_registered_through_a_wildcard_pattern() {
-    // `h?` 一条模式覆盖 h1~h6；正文走自然块展开器的**可调用接口**，
+    // `^h[1-6]$` 一条正则覆盖 h1~h6；正文走自然块展开器的**可调用接口**，
     // 所以标题里能写行内标记，而且不会多套一层段落。
     assert_eq!(
         render("::h1: 一级**标题**"),
@@ -263,11 +263,12 @@ fn headings_are_registered_through_a_wildcard_pattern() {
 }
 
 #[test]
-fn a_name_that_only_looks_like_a_heading_reports_an_error() {
-    // `h?` 也会命中 `ha`，所以展开器自己要挡住——报错而不是静默丢掉。
+fn a_name_that_is_not_a_heading_falls_through_to_the_generic_error() {
+    // 正则把级别写准了，所以 `ha` 根本不命中标题模式，落到兜底展开器上——
+    // 报错由兜底给出，比标题展开器自己挡更准确，也不依赖展开器自觉。
     let html = render("::ha: x");
-    assert!(html.contains("nm-error-expand-failed"), "{html}");
-    assert!(html.contains("标题级别只能是 h1~h6"), "{html}");
+    assert!(html.contains("nm-error-no-handler"), "{html}");
+    assert!(html.contains("未注册的调用块 ::ha"), "{html}");
 }
 
 #[test]

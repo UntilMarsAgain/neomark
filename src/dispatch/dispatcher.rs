@@ -454,8 +454,8 @@ mod tests {
     fn exact_names_beat_patterns_and_later_patterns_beat_earlier_ones() {
         let build = || {
             let mut registry = Registry::new();
-            registry.register_pattern("h*", Marker("star"));
-            registry.register_pattern("h?", Marker("question"));
+            registry.register_pattern(regex::Regex::new("^h.*$").unwrap(), Marker("star"));
+            registry.register_pattern(regex::Regex::new("^h.$").unwrap(), Marker("question"));
             registry.register("h1", Marker("exact"));
             registry
         };
@@ -476,8 +476,8 @@ mod tests {
     #[test]
     fn a_pattern_registered_twice_keeps_only_the_last_handler() {
         let mut registry = Registry::new();
-        registry.register_pattern("h?", Marker("first"));
-        registry.register_pattern("h?", Marker("second"));
+        registry.register_pattern(regex::Regex::new("^h.$").unwrap(), Marker("first"));
+        registry.register_pattern(regex::Regex::new("^h.$").unwrap(), Marker("second"));
 
         assert_eq!(registry.patterns().count(), 1);
         assert_eq!(sexpr(&run("::h3:\n", registry)), r#"text("second:h3")"#);

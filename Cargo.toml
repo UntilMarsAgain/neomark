@@ -7,3 +7,6 @@ edition = "2024"
 # 关掉默认的 `macros` 特性：它只为 `indextree!` 宏服务，会拖进 proc-macro2/syn/
 # strum/thiserror 一整棵依赖树；我们只用 Arena 本身。
 indextree = { version = "4.9", default-features = false, features = ["std"] }
+# 展开器的通配分发用正则，而不是自己发明一套模式方言：
+# 自己发明的话 `?` 会跟正则的「量词」语义撞车，`h[1-6]` 这种精确写法也写不出来。
+regex = "1"

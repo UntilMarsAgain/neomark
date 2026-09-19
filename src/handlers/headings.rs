@@ -17,6 +17,12 @@ pub struct Headings {
     natural: NaturalExpander,
 }
 
+impl Default for Headings {
+    fn default() -> Self {
+        Self::new(NaturalExpander::default())
+    }
+}
+
 impl Headings {
     /// 用给定的自然块展开器构造（它负责解析标题正文里的行内标记）。
     pub const fn new(natural: NaturalExpander) -> Self {
@@ -24,6 +30,9 @@ impl Headings {
     }
 
     /// 从调用名里读级别：只有 `h1` ~ `h6` 算数。
+    ///
+    /// 默认注册用的模式 `^h[1-6]$` 已经挡过一次了；这里再挡一次，是为了让
+    /// [`Headings`] 被挂到更宽的模式上时也不会产出非法级别。
     fn level(name: &str) -> Option<u8> {
         let level: u8 = name.strip_prefix('h')?.parse().ok()?;
         (1..=6).contains(&level).then_some(level)
