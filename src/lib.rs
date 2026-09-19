@@ -93,6 +93,6 @@ pub use ast::{
     Params, Span,
 };
 pub use dispatch::{Context, Dispatcher, Fallback, Handler, Registry};
-pub use handlers::{Headings, NaturalExpander};
+pub use handlers::{Headings, NaturalExpander, Wrap};
 pub use inline::Options;
 pub use parse::{CallHeader, parse, parse_call_header};

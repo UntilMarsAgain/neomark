@@ -6,15 +6,18 @@
 //!   [`Handler`](crate::dispatch::Handler)，也是一个**可直接调用的接口**，
 //!   其他展开器解析文本时用它。
 //! * [`Headings`]——`::h1` ~ `::h6`，用一条正则模式 `^h[1-6]$` 注册。
+//! * [`Wrap`]——**注册时的语法糖**：把调用套一层标签/带 class 的 div。
 //!
 //! 注册默认展开器用 [`register_defaults`]。想换行内配置，就自己构造一个
 //! [`NaturalExpander`] 再注册。
 
 mod headings;
 mod natural;
+mod wrap;
 
 pub use headings::Headings;
 pub use natural::NaturalExpander;
+pub use wrap::Wrap;
 
 use crate::dispatch::Registry;
 

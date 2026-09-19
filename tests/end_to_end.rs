@@ -3,6 +3,7 @@
 //! 这里只用公共 API，模拟外部使用者。
 
 use neomark::{Context, Dispatcher, Registry, handlers, html, parse};
+use regex::Regex;
 
 fn render(source: &str) -> String {
     let mut ast = parse(source);
@@ -12,6 +13,18 @@ fn render(source: &str) -> String {
     let mut ctx = Context::new(source);
     Dispatcher::new(registry).run(&mut ast, &mut ctx);
 
+    html::render(&ast)
+}
+
+/// 在默认展开器之上再注册一些东西，然后渲染。
+fn render_with(source: &str, extra: impl FnOnce(&mut Registry)) -> String {
+    let mut ast = parse(source);
+    let mut registry = Registry::new();
+    handlers::register_defaults(&mut registry);
+    extra(&mut registry);
+
+    let mut ctx = Context::new(source);
+    Dispatcher::new(registry).run(&mut ast, &mut ctx);
     html::render(&ast)
 }
 
@@ -269,6 +282,51 @@ fn a_name_that_is_not_a_heading_falls_through_to_the_generic_error() {
     let html = render("::ha: x");
     assert!(html.contains("nm-error-no-handler"), "{html}");
     assert!(html.contains("未注册的调用块 ::ha"), "{html}");
+}
+
+#[test]
+fn a_wrapper_registration_puts_the_body_inside_an_element() {
+    // 这就是「注册时的语法糖」：一行注册，替代一整个 Handler 实现。
+    let html = render_with("::notice: **注意**", |registry| {
+        registry.register("notice", handlers::Wrap::tag("div").class("nm-notice"));
+    });
+
+    assert_eq!(
+        html,
+        concat!(
+            "<div class=\"nm-notice\">",
+            "<p class=\"nm-p\"><strong class=\"nm-strong\">注意</strong></p>",
+            "</div>"
+        )
+    );
+}
+
+#[test]
+fn a_wrapper_can_derive_a_class_from_the_call_name() {
+    let html = render_with("::note-warning: 小心", |registry| {
+        registry.register_pattern(
+            Regex::new("^note-").unwrap(),
+            handlers::Wrap::tag("aside").class("note").class_from_name(),
+        );
+    });
+
+    assert_eq!(
+        html,
+        "<aside class=\"note note-warning\"><p class=\"nm-p\">小心</p></aside>"
+    );
+}
+
+#[test]
+fn a_wrapper_still_expands_nested_blocks() {
+    // 块体是移交过去的，所以内层照样展开
+    let html = render_with("::box:\n  ::h2: 标题", |registry| {
+        registry.register("box", handlers::Wrap::tag("section").class("box"));
+    });
+
+    assert_eq!(
+        html,
+        "<section class=\"box\"><h2 class=\"nm-h2\">标题</h2></section>"
+    );
 }
 
 #[test]
