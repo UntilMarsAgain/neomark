@@ -13,7 +13,7 @@
 //!   节点在 arena 里的子节点。
 
 use crate::ast::{Ast, Block, CallBlock, NaturalBlock, NodeId, NodeKind, Span};
-use crate::parse::header::parse_call_header;
+use crate::parse::header::{CallHeader, parse_call_header};
 use crate::parse::line::{SrcLine, scan_lines};
 
 /// 把一段 neomark 文本解析成一棵块树。
@@ -86,7 +86,11 @@ fn parse_natural(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId,
 fn parse_call(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId, usize) {
     let header_line = &lines[start];
     let header_indent = header_line.indent;
-    let header = parse_call_header(header_line.content());
+    let CallHeader {
+        name,
+        params,
+        content,
+    } = parse_call_header(header_line.content());
 
     // 向后找块体：空行跳过但不算结束，缩进严格更大的行算内容。
     // `body_end` 始终停在“最后一行内容行 + 1”，从而自动丢掉末尾空行。
@@ -112,10 +116,27 @@ fn parse_call(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId, us
         body_start += 1;
     }
 
+    // 头行分隔冒号之后的内容是块体的**首行**，缩进视为 0：它就是「第一行」，
+    // 不该参与缩进比较。于是续行也以 0 为基准，相对缩进被原样保留——
+    // 这对 `::code lang=rust: fn main() {` 这种要在首行写代码的块尤其重要。
+    let mut body: Vec<SrcLine<'_>> = Vec::new();
+    if let Some(content) = &content {
+        body.push(SrcLine {
+            text: content,
+            indent: 0,
+            blank: false,
+            line_no: header_line.line_no,
+            start: header_line.end - content.len(),
+            end: header_line.end,
+        });
+    }
+    body.extend_from_slice(&lines[body_start..body_end]);
+
     // 去掉公共缩进后递归解析；块体就是调用节点的子节点。
-    let dedented = dedent(&lines[body_start..body_end]);
-    let children = parse_sequence(ast, &dedented);
-    let raw_body = join_lines(&dedented);
+    // 有首行内容时公共缩进必为 0，这一步等价于没做。
+    let body = dedent(&body);
+    let children = parse_sequence(ast, &body);
+    let raw_body = join_lines(&body);
 
     // 没有块体时 `body_end == start + 1`，这里正好落回头部行自身。
     let last = &lines[body_end - 1];
@@ -127,8 +148,8 @@ fn parse_call(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId, us
     );
 
     let id = ast.new_node(NodeKind::Unparsed(Block::Call(CallBlock {
-        name: header.name,
-        params: header.params,
+        name,
+        params,
         raw_body,
         span,
     })));
@@ -314,6 +335,64 @@ mod tests {
             "  ::inner:\n    x"
         );
         assert_eq!(ast.call(inner).unwrap().raw_body, "x");
+    }
+
+    #[test]
+    fn the_first_line_after_the_separator_joins_the_body() {
+        let ast = parse("::a b=1: 首行\n  续行");
+        assert_eq!(sexpr(&ast), r#"(call a b=1 natural("首行\n  续行"))"#);
+    }
+
+    #[test]
+    fn a_body_can_be_just_the_first_line() {
+        let ast = parse("::notice type=warning: 小心！");
+        assert_eq!(
+            sexpr(&ast),
+            r#"(call notice type=warning natural("小心！"))"#
+        );
+    }
+
+    #[test]
+    fn the_first_line_form_keeps_relative_indentation() {
+        // 首行内容的缩进视为 0，于是续行以 0 为基准——这正是 `::code` 需要的。
+        let source = "::code lang=rust: fn main() {\n  println!();\n  }";
+        let ast = parse(source);
+        let root = ast.children(ast.document()).next().unwrap();
+
+        assert_eq!(
+            ast.call(root).unwrap().raw_body,
+            "fn main() {\n  println!();\n  }"
+        );
+        assert_eq!(
+            ast.call(root).unwrap().span,
+            Span::new(1, 3, 0, source.len())
+        );
+    }
+
+    #[test]
+    fn the_two_line_form_still_dedents() {
+        let ast = parse("::code lang=rust:\n  fn main() {\n    println!();\n  }");
+        let root = ast.children(ast.document()).next().unwrap();
+        assert_eq!(
+            ast.call(root).unwrap().raw_body,
+            "fn main() {\n  println!();\n}"
+        );
+    }
+
+    #[test]
+    fn a_header_without_a_separator_still_has_no_body() {
+        // 向后兼容：没有冒号时整行都是头部
+        let ast = parse("::a b=1\n下一块");
+        assert_eq!(sexpr(&ast), r#"call a b=1 natural("下一块")"#);
+    }
+
+    #[test]
+    fn nesting_still_works_when_the_outer_block_has_a_first_line() {
+        let ast = parse("::outer: 首行\n  ::inner:\n    x");
+        assert_eq!(
+            sexpr(&ast),
+            r#"(call outer natural("首行") (call inner natural("x")))"#
+        );
     }
 
     #[test]

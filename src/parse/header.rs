@@ -3,7 +3,8 @@
 //! 一个调用行形如：
 //!
 //! ```text
-//! ::name key=value flag "带空格的值"=... :
+//! ::name key=value flag :
+//! ::name key=value: 首行内容
 //! ```
 //!
 //! 规则：
@@ -12,7 +13,11 @@
 //! * 其余以空白分隔的 token 是参数：`key=value` 为键值对，
 //!   单独的 `flag` 视为 `flag=true`；
 //! * 值可以用双引号包裹（可以含空格），支持 `\"` `\\` `\n` `\t` `\r` 转义；
-//! * 行尾的 `:` 是可选终止符，会被剥离；
+//! * **分隔冒号**把头部与首行内容分开：`::name k=v: 内容` 里的 `内容` 就是
+//!   块体的第一行。分隔冒号定义为 `::` 之后第一个**不在引号内、且后面紧跟
+//!   空白或行尾**的 `:`——所以 `url=http://x` 里的冒号不会被误认成分隔符，
+//!   而 `::a url=http://x: 内容` 里 `x` 后面那个才是；
+//! * 没有分隔冒号时整行都是头部（`::name k=v` 与旧的 `::name k=v:` 行为不变）；
 //! * 解析永不失败：语义异常（空名字、引号不闭合、`=x` 之类）都按宽容策略处理。
 
 use crate::ast::Params;
@@ -24,6 +29,10 @@ pub struct CallHeader {
     pub name: String,
     /// 参数表。
     pub params: Params,
+    /// 分隔冒号之后的**首行内容**（已去掉前导空白）。
+    ///
+    /// 它是块体的第一行。没有分隔冒号、或者冒号后面是空的，就是 `None`。
+    pub content: Option<String>,
 }
 
 /// 识别一行调用块头部。
@@ -31,14 +40,19 @@ pub struct CallHeader {
 /// 传入的应当是去掉行首缩进后的整行文本（`::` 开头）。为宽容起见，
 /// 前导空白与缺失的 `::` 都会被容忍。
 pub fn parse_call_header(line: &str) -> CallHeader {
-    let rest = line.trim_start();
+    let (head, content) = match find_separator(line) {
+        Some(separator) => (
+            &line[..separator],
+            Some(line[separator + 1..].trim_start().to_string()),
+        ),
+        None => (line, None),
+    };
+
+    let rest = head.trim_start();
     let rest = rest.strip_prefix("::").unwrap_or(rest);
-
-    // 末尾的可选终止符 `:` 先剥离，再做 token 切分。
     let rest = rest.trim();
-    let body = rest.strip_suffix(':').unwrap_or(rest);
 
-    let mut scanner = Scanner::new(body);
+    let mut scanner = Scanner::new(rest);
     let name = scanner.read_name();
 
     // 容忍 `::name: param` 这种名字后面多出来的冒号。
@@ -65,7 +79,51 @@ pub fn parse_call_header(line: &str) -> CallHeader {
         }
     }
 
-    CallHeader { name, params }
+    CallHeader {
+        name,
+        params,
+        content: content.filter(|text| !text.is_empty()),
+    }
+}
+
+/// 找出**分隔冒号**的字节下标。
+///
+/// 它是 `::` 之后第一个不在引号内、且后面紧跟空白或行尾的 `:`。这条规则让
+/// 值里的冒号安然无恙：`url=http://x` 的冒号后面是 `/`，所以不算分隔符。
+fn find_separator(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    let head_start = line.len() - trimmed.len();
+    let scan_from = if trimmed.starts_with("::") {
+        head_start + 2
+    } else {
+        head_start
+    };
+
+    let mut quoted = false;
+    let mut escaped = false;
+
+    for (offset, ch) in line[scan_from..].char_indices() {
+        let at = scan_from + offset;
+
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ':' if !quoted => {
+                let next = line[at + 1..].chars().next();
+                if next.is_none_or(char::is_whitespace) {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// 把一个参数 token 转成键值对写进参数表。
@@ -319,10 +377,56 @@ mod tests {
     }
 
     #[test]
-    fn colon_right_after_the_name_is_tolerated() {
+    fn a_colon_right_after_the_name_starts_the_first_line_instead_of_tolerating_a_param() {
+        // 语义变化：以前 `::a: b=1` 会把 `b=1` 当参数（旧代码会剥掉尾部冒号），
+        // 现在紧跟名字的分隔冒号一律开启首行内容——这才是它该有的意思。
         let header = parse_call_header("::a: b=1");
         assert_eq!(header.name, "a");
+        assert!(header.params.is_empty());
+        assert_eq!(header.content.as_deref(), Some("b=1"));
+    }
+
+    #[test]
+    fn the_separator_colon_splits_off_the_first_line() {
+        let header = parse_call_header("::a b=1: 首行");
+        assert_eq!(header.name, "a");
         assert_eq!(header.params.get("b"), Some("1"));
+        assert_eq!(header.content.as_deref(), Some("首行"));
+    }
+
+    #[test]
+    fn a_colon_inside_a_value_is_not_the_separator() {
+        // `http:` 的冒号后面是 `/`，所以不算分隔符
+        let header = parse_call_header("::a url=http://x");
+        assert_eq!(header.params.get("url"), Some("http://x"));
+        assert_eq!(header.content, None);
+
+        // `x` 后面那个才是
+        let header = parse_call_header("::a url=http://x: 首行");
+        assert_eq!(header.params.get("url"), Some("http://x"));
+        assert_eq!(header.content.as_deref(), Some("首行"));
+    }
+
+    #[test]
+    fn a_colon_inside_quotes_is_not_the_separator() {
+        let header = parse_call_header("::a title=\"x: y\": 首行");
+        assert_eq!(header.params.get("title"), Some("x: y"));
+        assert_eq!(header.content.as_deref(), Some("首行"));
+    }
+
+    #[test]
+    fn the_first_line_may_itself_contain_colons() {
+        let header = parse_call_header("::a: 看 http://x 说完");
+        assert_eq!(header.content.as_deref(), Some("看 http://x 说完"));
+    }
+
+    #[test]
+    fn no_separator_or_an_empty_first_line_means_no_content() {
+        assert_eq!(parse_call_header("::a b=1").content, None);
+        // 旧的尾冒号写法仍然不产生内容
+        assert_eq!(parse_call_header("::a b=1:").content, None);
+        // 冒号后全是空白同样不算内容
+        assert_eq!(parse_call_header("::a b=1:   ").content, None);
     }
 
     #[test]
