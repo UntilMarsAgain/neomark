@@ -19,28 +19,32 @@
 //!
 //! * [`ast`]：块树 —— 一棵 `indextree` arena 树，是调度器与渲染器唯一依赖的稳定层；
 //! * [`dispatch`]：块的种类 → 展开器的分发与改写；
+//! * [`handlers`]：内置展开器（目前只有自然块 → `<p>`）；
+//! * [`html`]：把已展开的树写成 HTML，[`html::render_page`] 产出内嵌默认 CSS 的完整页面；
 //! * `parse`：解析器实现，内部模块不对外暴露，只通过 crate 根重新导出入口。
 //!
-//! 依赖方向固定为 `parse → ast`、`dispatch → ast`、`html → ast`；
-//! `ast` 永不反向依赖。
+//! 依赖方向固定为 `parse → ast`、`dispatch → ast`、`handlers → ast`、
+//! `html → ast`；`ast` 永不反向依赖。
 //!
 //! ## 用法
 //!
 //! ```
-//! use neomark::{Context, Dispatcher, Registry, parse};
+//! use neomark::{Context, Dispatcher, Registry, handlers, html, parse};
 //!
-//! let source = "::notice type=warning:\n  小心！";
+//! let source = "一段普通文字。";
 //! let mut ast = parse(source);
 //!
-//! let dispatcher = Dispatcher::new(Registry::new());
-//! let mut ctx = Context::new(source);
-//! dispatcher.run(&mut ast, &mut ctx);
+//! let mut registry = Registry::new();
+//! handlers::register_defaults(&mut registry);
 //!
-//! // 没有展开器认领的块会变成 NodeKind::Error（叶子，带着原文内容），
-//! // 而不是让解析或展开失败。
-//! let root = ast.children(ast.document()).next().unwrap();
-//! assert!(ast.error(root).is_some());
+//! let mut ctx = Context::new(source);
+//! Dispatcher::new(registry).run(&mut ast, &mut ctx);
+//!
+//! assert_eq!(html::render(&ast), "<p class=\"nm-p\">一段普通文字。</p>");
 //! ```
+//!
+//! 没有展开器认领的块会变成报错节点（叶子，带着原文内容），渲染器把它画成
+//! 信息提示框，而不是让解析或展开失败。
 //!
 //! ## 切分规则
 //!
@@ -54,6 +58,8 @@
 
 pub mod ast;
 pub mod dispatch;
+pub mod handlers;
+pub mod html;
 
 mod parse;
 

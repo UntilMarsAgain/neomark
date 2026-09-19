@@ -43,3 +43,19 @@ pub enum ErrorKind {
     /// 展开器自己判定无法展开这个块。
     ExpandFailed,
 }
+
+impl ErrorKind {
+    /// 稳定的机器可读名字，用作 CSS 类名后缀与 `data-kind`。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ErrorKind::NoHandler => "no-handler",
+            ErrorKind::ExpandFailed => "expand-failed",
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
