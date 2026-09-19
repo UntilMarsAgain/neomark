@@ -36,6 +36,13 @@ fn head(ast: &Ast, id: NodeId) -> String {
             }
             out
         }
+        Some(NodeKind::InlineCall { name, params, .. }) => {
+            let mut out = format!("inline-call {name}");
+            for (key, value) in params.iter() {
+                out.push_str(&format!(" {key}={value}"));
+            }
+            out
+        }
         Some(NodeKind::Link { target }) => format!("link {target}"),
         Some(NodeKind::Element { tag, attrs }) => {
             let mut out = format!("element {tag}");
@@ -71,6 +78,7 @@ pub(crate) fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Document => "document",
         NodeKind::Unparsed(_) => "unparsed",
         NodeKind::Paragraph => "paragraph",
+        NodeKind::InlineCall { .. } => "inline-call",
         NodeKind::Instance { .. } => "instance",
         NodeKind::Element { .. } => "element",
         NodeKind::Link { .. } => "link",
@@ -82,7 +90,6 @@ pub(crate) fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Mark => "mark",
         NodeKind::Code => "code",
         NodeKind::Math => "math",
-        NodeKind::Emoji(_) => "emoji",
         NodeKind::LineBreak => "line-break",
         NodeKind::Text(_) => "text",
         NodeKind::Error(_) => "error",

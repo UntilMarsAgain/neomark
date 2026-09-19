@@ -7,8 +7,8 @@
 //! 注意这里**不做任何渲染决定**：代码跨度只标成 `Code`、数学只标成 `Math`、
 //! 短码只记名字，长什么样是 [`crate::html`] 的事。
 
-use super::{Piece, emoji, entities, smart};
-use crate::ast::NodeKind;
+use super::{Piece, entities, smart};
+use crate::ast::{NodeKind, Params};
 
 /// 会成为分隔符的字符。
 fn is_delimiter(c: char) -> bool {
@@ -96,15 +96,36 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
                 }
             },
 
-            ':' => match emoji::parse(&chars[i..]) {
+            // 行内调用的糖形态：`:name:`
+            ':' => match parse_bare_call(&chars, i) {
                 Some((name, used)) => {
-                    // 短码单独成型：只带走名字，认不认识由渲染器决定。
                     flush(&mut out, &mut literal, &mut smart);
-                    out.push(Piece::Emoji(name));
+                    out.push(Piece::InlineCall {
+                        name,
+                        params: Params::new(),
+                        content: None,
+                    });
                     i += used;
                 }
                 None => {
                     literal.push(':');
+                    i += 1;
+                }
+            },
+
+            // 行内调用的全形：`{{name k=v: 内容}}`
+            '{' if chars.get(i + 1) == Some(&'{') => match parse_inline_call(&chars, i) {
+                Some((name, params, content, end)) => {
+                    flush(&mut out, &mut literal, &mut smart);
+                    out.push(Piece::InlineCall {
+                        name,
+                        params,
+                        content,
+                    });
+                    i = end;
+                }
+                None => {
+                    literal.push('{');
                     i += 1;
                 }
             },
@@ -184,6 +205,71 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
     let target = region[split + 2..].trim().to_string();
 
     Some((target, text, close + 2))
+}
+
+/// 识别行内调用的**糖形态** `:name:`。
+///
+/// 只认「小写字母 / 数字 / `_` `+` `-`」组成、两侧都有冒号、名字至少两个字符的
+/// 形式，所以正文里的 `12:30:45` 不会被误判。它等价于 `{{name}}`。
+fn parse_bare_call(chars: &[char], start: usize) -> Option<(String, usize)> {
+    if chars.get(start) != Some(&':') {
+        return None;
+    }
+
+    let end = start + 1 + chars[start + 1..].iter().take(48).position(|&c| c == ':')?;
+    if end < start + 3 {
+        return None;
+    }
+
+    let name: String = chars[start + 1..end].iter().collect();
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'+' | b'-'))
+    {
+        return None;
+    }
+
+    Some((name, end + 1 - start))
+}
+
+/// 解析行内调用的**全形** `{{name k=v: 内容}}`。
+///
+/// 返回（名字, 参数, 首行内容, 结束下标）。
+///
+/// * `}}` 按**配平**匹配，所以内容里可以再嵌 `{{...}}`；不配平就返回 `None`，
+///   原样落回字面文本。
+/// * 括号内部交给 [`crate::parse::parse_call_header`]——**和块头部是同一个
+///   解析器**，这才是「括号内部与块头部逐字节相同」的真正保证，而不是靠
+///   约定。
+fn parse_inline_call(
+    chars: &[char],
+    start: usize,
+) -> Option<(String, Params, Option<String>, usize)> {
+    let mut depth = 1usize;
+    let mut i = start + 2;
+
+    let close = loop {
+        if i + 1 >= chars.len() {
+            return None;
+        }
+        if chars[i] == '{' && chars[i + 1] == '{' {
+            depth += 1;
+            i += 2;
+        } else if chars[i] == '}' && chars[i + 1] == '}' {
+            depth -= 1;
+            if depth == 0 {
+                break i;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    };
+
+    let inside: String = chars[start + 2..close].iter().collect();
+    let header = crate::parse::parse_call_header(&inside);
+
+    Some((header.name, header.params, header.content, close + 2))
 }
 
 /// 把累积的普通文本收成一个片段，顺便做智能标点。
@@ -277,7 +363,21 @@ mod tests {
                 Piece::Node { kind, children } => {
                     format!("[{} {}]", kind_name(kind), texts(children).join(""))
                 }
-                Piece::Emoji(name) => format!("E({name})"),
+                Piece::InlineCall {
+                    name,
+                    params,
+                    content,
+                } => {
+                    let mut out = format!("I({name}");
+                    for (key, value) in params.iter() {
+                        out.push_str(&format!(" {key}={value}"));
+                    }
+                    if let Some(content) = content {
+                        out.push_str(&format!(": {content}"));
+                    }
+                    out.push(')');
+                    out
+                }
                 Piece::Link { target, text } => format!("L({text} => {target})"),
                 Piece::LineBreak => "<br>".to_string(),
                 Piece::Delim { ch, count, .. } => format!("D({ch}{count})"),
@@ -324,10 +424,44 @@ mod tests {
     }
 
     #[test]
-    fn emoji_becomes_a_name_only_piece() {
-        // 值不在这里解析——只带走名字。
-        assert_eq!(show("&amp; :smile:"), "T(& )E(smile)");
-        assert_eq!(show(":nope:"), "E(nope)");
+    fn the_sugar_form_is_an_inline_call_with_no_params() {
+        // 糖形态不在这里解析任何值——只带走名字。
+        assert_eq!(show("&amp; :smile:"), "T(& )I(smile)");
+        assert_eq!(show(":nope:"), "I(nope)");
+        assert_eq!(show(":+1:"), "I(+1)");
+        // 形状不合法就落回字面
+        assert_eq!(show("12:30:45"), "T(12)I(30)T(45)");
+        // ↑ `:30:` 形状合法，所以确实是行内调用；渲染器不认识这个名字，
+        //   会原样回显成 `:30:`，于是输出仍是 12:30:45（与旧行为一致）。
+        assert_eq!(show(":Smile:"), "T(:Smile:)");
+    }
+
+    #[test]
+    fn the_braced_form_carries_params_and_content() {
+        assert_eq!(show("{{smile}}"), "I(smile)");
+        assert_eq!(show("{{a b=1}}"), "I(a b=1)");
+        assert_eq!(show("{{a b=1: 内容}}"), "I(a b=1: 内容)");
+        // 头部语法与块完全相同：值里的冒号不会被误当分隔符
+        assert_eq!(show("{{a url=http://x}}"), "I(a url=http://x)");
+        // 周围是普通文本
+        assert_eq!(show("看 {{a}} 这里"), "T(看 )I(a)T( 这里)");
+    }
+
+    #[test]
+    fn braces_are_balanced_so_content_may_nest_an_inline_call() {
+        assert_eq!(show("{{outer: {{inner}}}}"), "I(outer: {{inner}})");
+    }
+
+    #[test]
+    fn unbalanced_braces_fall_back_to_literal_text() {
+        assert_eq!(show("{{a b=1}} 未闭合 {{c"), "I(a b=1)T( 未闭合 {{c)");
+        assert_eq!(show("{{未闭合"), "T({{未闭合)");
+    }
+
+    #[test]
+    fn inline_calls_do_not_trigger_inside_code_or_math() {
+        assert_eq!(show("`{{a}}`"), "[code T({{a}})]");
+        assert_eq!(show("`:smile:`"), "[code T(:smile:)]");
     }
 
     #[test]

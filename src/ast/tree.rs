@@ -22,6 +22,7 @@ use indextree::{Arena, NodeId};
 use super::block::{Block, CallBlock, NaturalBlock};
 use super::error::ErrorNode;
 use super::params::Params;
+use super::span::Span;
 
 /// 节点载荷：**语义**种类，不含任何 HTML。
 ///
@@ -32,14 +33,30 @@ pub enum NodeKind {
     Document,
     /// **未解析**的块；具体是哪一种语法块由 [`Block`] 说明。
     Unparsed(Block),
+    /// **未解析**的行内调用：`{{name k=v: 内容}}`，或糖形态 `:name:`。
+    ///
+    /// 由行内层产出，调度器按名字查找展开器。**没有注册展开器时它保持原样**，
+    /// 交给渲染器按名字解释（emoji 就是这条路）——所以行内调用不像块调用那样
+    /// 有兜底报错节点。
+    ///
+    /// 参数保持字符串，**要不要对某个参数值做行内解析由展开器自己决定**。
+    InlineCall {
+        /// 调用名。
+        name: String,
+        /// 参数表。
+        params: Params,
+        /// 位置。行内层不跟踪列偏移，所以这是**外层块**的位置。
+        span: Span,
+    },
 
     // ── 块级语义 ──────────────────────────────────────────
     /// 段落：孩子是行内节点。
     Paragraph,
     /// 调用块展开出的**模板实例**。
     ///
-    /// 只记名字与参数——它长什么样完全由渲染器决定。这与 [`NodeKind::Emoji`]
-    /// 是同一种做法：AST 负责「这是什么」，渲染器负责「长什么样」。
+    /// 只记名字与参数——它长什么样完全由渲染器决定，和
+    /// [`NodeKind::InlineCall`] 是同一个做法：AST 负责「这是什么」，
+    /// 渲染器负责「长什么样」。
     Instance {
         /// 模板名，例如 `notice`。
         name: String,
@@ -64,8 +81,6 @@ pub enum NodeKind {
     Code,
     /// 行内数学；孩子是一个**原样**文本。
     Math,
-    /// Emoji 短码；只记名字，怎么显示由渲染器决定。
-    Emoji(String),
     /// 硬换行。
     LineBreak,
     /// 行内链接。孩子是链接文本，展开后是行内内容。
@@ -112,8 +127,10 @@ pub enum KindTag {
     Document,
     /// 未解析的自然块：没有名字，走专门槽位。
     Natural,
-    /// 未解析的调用块：按名字查找。
+    /// 未解析的调用块：按名字查找展开器，查不到走兜底报错。
     Call,
+    /// 未解析的行内调用：按名字查找展开器，**查不到就保持原样**交给渲染器。
+    InlineCall,
     /// 已经展开的语义节点。
     Expanded,
 }
@@ -125,6 +142,7 @@ impl NodeKind {
             NodeKind::Document => KindTag::Document,
             NodeKind::Unparsed(Block::Natural(_)) => KindTag::Natural,
             NodeKind::Unparsed(Block::Call(_)) => KindTag::Call,
+            NodeKind::InlineCall { .. } => KindTag::InlineCall,
             _ => KindTag::Expanded,
         }
     }
@@ -132,6 +150,11 @@ impl NodeKind {
     /// 是否是尚未解析的块。
     pub const fn is_unparsed(&self) -> bool {
         matches!(self, NodeKind::Unparsed(_))
+    }
+
+    /// 是否是尚未展开的行内调用。
+    pub const fn is_inline_call(&self) -> bool {
+        matches!(self, NodeKind::InlineCall { .. })
     }
 }
 
@@ -230,10 +253,10 @@ impl Ast {
         }
     }
 
-    /// Emoji 短码名。
-    pub fn emoji(&self, id: NodeId) -> Option<&str> {
+    /// 行内调用的名字、参数与位置。
+    pub fn inline_call(&self, id: NodeId) -> Option<(&str, &Params, Span)> {
         match self.arena.get_data(id)? {
-            NodeKind::Emoji(alias) => Some(alias),
+            NodeKind::InlineCall { name, params, span } => Some((name, params, *span)),
             _ => None,
         }
     }
@@ -303,9 +326,18 @@ impl Ast {
         })
     }
 
-    /// 新建一个 Emoji 节点。
-    pub fn new_emoji(&mut self, alias: impl Into<String>) -> NodeId {
-        self.new_node(NodeKind::Emoji(alias.into()))
+    /// 新建一个行内调用节点。
+    pub fn new_inline_call(
+        &mut self,
+        name: impl Into<String>,
+        params: Params,
+        span: Span,
+    ) -> NodeId {
+        self.new_node(NodeKind::InlineCall {
+            name: name.into(),
+            params,
+            span,
+        })
     }
 
     /// 新建一个链接节点。

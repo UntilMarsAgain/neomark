@@ -15,10 +15,11 @@ use crate::ast::{Ast, ErrorKind, ErrorNode, KindTag, NodeId, Span};
 /// 一个节点，返回多个表示展开成多个兄弟节点。返回的节点里若仍含未展开的块，
 /// 调度器会继续推进。
 pub trait Handler {
-    /// 展开一个未展开的块。默认按种类分发到下面两个方法。
+    /// 展开一个未展开的节点。默认按种类分发到下面三个方法。
     fn expand(&self, node: NodeId, ast: &mut Ast, ctx: &mut Context<'_>) -> Vec<NodeId> {
         match ast.tag(node) {
             Some(KindTag::Call) => self.expand_call(node, ast, ctx),
+            Some(KindTag::InlineCall) => self.expand_inline(node, ast, ctx),
             Some(KindTag::Natural) => self.expand_natural(node, ast, ctx),
             _ => Vec::new(),
         }
@@ -35,6 +36,24 @@ pub trait Handler {
         vec![ast.new_error(ErrorNode::new(
             ErrorKind::NoHandler,
             format!("未注册的调用块 ::{name}"),
+            span,
+            ctx.slice(span),
+        ))]
+    }
+
+    /// 展开一个**行内调用**。默认产出报错节点。
+    ///
+    /// 注意调度器**只在名字有注册展开器时**才会走到这里。名字没有展开器的
+    /// 行内调用会保持原样，交给渲染器按名字解释——emoji 走的就是那条路。
+    fn expand_inline(&self, node: NodeId, ast: &mut Ast, ctx: &mut Context<'_>) -> Vec<NodeId> {
+        let Some((name, _, span)) = ast.inline_call(node) else {
+            return Vec::new();
+        };
+        let name = name.to_string();
+
+        vec![ast.new_error(ErrorNode::new(
+            ErrorKind::NoHandler,
+            format!("没有展开器能处理行内调用 {{{name}}}"),
             span,
             ctx.slice(span),
         ))]

@@ -49,6 +49,12 @@ impl Dispatcher {
 
     /// 展开一个节点，并递归处理它展开出来的节点。
     fn expand_node(&self, ast: &mut Ast, node: NodeId, ctx: &mut Context<'_>) {
+        // 行内调用走单独一条路：**没有展开器就保持原样**，不套兜底报错。
+        if ast.tag(node) == Some(KindTag::InlineCall) {
+            self.expand_inline_call(ast, node, ctx);
+            return;
+        }
+
         if !ast.is_unparsed(node) {
             // 已展开的节点：继续往下走。
             let children: Vec<NodeId> = ast.children(node).collect();
@@ -60,7 +66,34 @@ impl Dispatcher {
 
         let handler = self.handler_for(ast, node);
         let replacement = handler.expand(node, ast, ctx);
+        self.splice(ast, node, replacement, ctx);
+    }
 
+    /// 展开一个行内调用。
+    ///
+    /// 与块调用不同：名字没有注册展开器时它**保持原样**（连兜底报错都不加），
+    /// 交给渲染器按名字解释。`{{smile}}` / `:smile:` 就是这条路——emoji 表
+    /// 属于渲染器，不认识的名字原样回显。
+    fn expand_inline_call(&self, ast: &mut Ast, node: NodeId, ctx: &mut Context<'_>) {
+        let handler = ast
+            .inline_call(node)
+            .and_then(|(name, _, _)| self.registry.get(name));
+
+        if let Some(handler) = handler {
+            let replacement = handler.expand(node, ast, ctx);
+            self.splice(ast, node, replacement, ctx);
+            return;
+        }
+
+        // 保持原样，但内容（首行内容那个未解析自然块）仍要继续推进。
+        let children: Vec<NodeId> = ast.children(node).collect();
+        for child in children {
+            self.expand_node(ast, child, ctx);
+        }
+    }
+
+    /// 用 `replacement` 在原位替换掉 `node`，再递归处理替换结果。
+    fn splice(&self, ast: &mut Ast, node: NodeId, replacement: Vec<NodeId>, ctx: &mut Context<'_>) {
         // 把替换结果插在 node 原来的位置上，顺序保持不变。
         let mut anchor = node;
         for &next in &replacement {
@@ -97,6 +130,7 @@ mod tests {
     use super::*;
     use crate::ast::test_util::sexpr;
     use crate::ast::{Attr, ErrorKind, ErrorNode, Span};
+    use crate::handlers::ParagraphHandler as RealParagraphHandler;
     use crate::parse::parse;
 
     /// 只关心调用块：把调用**换成一个模板实例**，并把原有子节点重新挂载过去。
@@ -136,9 +170,32 @@ mod tests {
         }
     }
 
+    /// 行内调用展开器：把 `{{badge …}}` 换成一个模板实例。
+    ///
+    /// 它拿到的参数是**字符串**，要不要对某个值做行内解析完全由它自己决定
+    /// ——这里故意什么都不做，只把参数交给实例。
+    struct BadgeHandler;
+
+    impl Handler for BadgeHandler {
+        fn expand_inline(
+            &self,
+            node: NodeId,
+            ast: &mut Ast,
+            _ctx: &mut Context<'_>,
+        ) -> Vec<NodeId> {
+            let (name, params, _) = ast.inline_call(node).unwrap();
+            let (name, params) = (name.to_string(), params.clone());
+
+            let instance = ast.new_instance(name, params);
+            for child in ast.children(node).collect::<Vec<_>>() {
+                ast.append(instance, child);
+            }
+            vec![instance]
+        }
+    }
+
     /// 只关心自然块。
     struct ParagraphHandler;
-
     impl Handler for ParagraphHandler {
         fn expand_natural(
             &self,
@@ -335,6 +392,50 @@ mod tests {
         assert_eq!(
             sexpr(&ast),
             r#"(element aside class=tip (paragraph text("正文")))"#
+        );
+    }
+
+    #[test]
+    fn an_inline_call_without_an_expander_is_left_alone() {
+        // 名字没有展开器 → 保持原样，连兜底报错都不加，交给渲染器解释。
+        let mut registry = Registry::new();
+        registry.register_natural(RealParagraphHandler);
+
+        let ast = run("正文 {{nope}} 结束\n", registry);
+
+        assert_eq!(
+            sexpr(&ast),
+            r#"(paragraph text("正文 ") inline-call nope text(" 结束"))"#
+        );
+    }
+
+    #[test]
+    fn a_registered_inline_expander_takes_over() {
+        let mut registry = Registry::new();
+        registry.register_natural(RealParagraphHandler);
+        registry.register("badge", BadgeHandler);
+
+        let ast = run("{{badge level=3: **新**}}\n", registry);
+
+        // 内容里的行内标记照常生效，而且**没有**多套一层段落
+        assert_eq!(
+            sexpr(&ast),
+            r#"(paragraph (instance badge level=3 (strong text("新"))))"#
+        );
+    }
+
+    #[test]
+    fn a_registered_handler_that_does_not_handle_inline_calls_fails_loudly() {
+        // NoticeHandler 只实现了 expand_call；同名行内调用走默认实现 → 报错
+        let mut registry = Registry::new();
+        registry.register_natural(RealParagraphHandler);
+        registry.register("notice", NoticeHandler);
+
+        let ast = run("{{notice}}\n", registry);
+
+        assert_eq!(
+            sexpr(&ast),
+            r#"(paragraph error("没有展开器能处理行内调用 {notice}"))"#
         );
     }
 

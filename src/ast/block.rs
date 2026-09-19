@@ -37,6 +37,12 @@ pub struct NaturalBlock {
     pub text: String,
     /// 位置范围。
     pub span: Span,
+    /// 这段文本是**行内内容**（链接文本、行内调用的内容）还是块级内容。
+    ///
+    /// 由**产出方**决定：切分层产出的是块级，行内层产出的是行内。展开器据此
+    /// 决定要不要给它套一层段落——这样就不必看父节点猜上下文，而上下文本就是
+    /// 产出时就知道的事实。
+    pub inline: bool,
 }
 
 impl NaturalBlock {

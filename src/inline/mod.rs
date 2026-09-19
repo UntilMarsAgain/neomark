@@ -10,7 +10,9 @@
 //! | 代码跨度 | `` `code` ``、`` ``a`b`` `` | [`NodeKind::Code`] + 原样文本 |
 //! | 数学 | `$x$`、`$$a$b$$` | [`NodeKind::Math`] + 原样文本 |
 //! | 实体 | `&amp;` `&#35;` | 对应字符 |
-//! | Emoji 短码 | `:smile:` | [`NodeKind::Emoji`]，**只有名字** |
+//! | 行内调用 · 糖形态 | `:smile:` | [`NodeKind::InlineCall`]，等价于 `{{smile}}` |
+//! | 行内调用 · 全形 | `{{name k=v: 内容}}` | [`NodeKind::InlineCall`] + 未解析的内容块 |
+//! | 链接 | `[[文本 => 目标]]` | [`NodeKind::Link`] + 未解析的文本块 |
 //! | 强调 / 加粗 | `*x*` / `**x**` | [`NodeKind::Emphasis`] / [`NodeKind::Strong`] |
 //! | 删除线 | `~~x~~` | [`NodeKind::Strikethrough`] |
 //! | 下标 / 上标 | `~x~` / `^x^` | [`NodeKind::Subscript`] / [`NodeKind::Superscript`] |
@@ -20,15 +22,21 @@
 //! **这里一个 HTML 字符串都没有。** 标签、类名、`\(...\)` 包装、emoji 到底
 //! 长什么样，全是 [`crate::html`] 的决定。
 //!
+//! # 行内调用与块调用共用同一套头部语法
+//!
+//! `{{name k=v: 内容}}` 的括号内部**直接交给 [`crate::parse::parse_call_header`]**
+//! ——和 `::name k=v: 内容` 是同一个解析器。所以「括号内部与块头部逐字节相同」
+//! 不是靠约定，而是靠代码本身成立的；`url=http://x` 这类含冒号的值在两边
+//! 行为完全一致。
+//!
 //! # 刻意不做的事
 //!
 //! * **`_` 不是强调**。只保留 `*` 定义的强调与加粗，`_` 一律当普通字符。
 //! * **没有行内原始 HTML**。`<div>` 会被当成普通文本转义输出。
-//! * **没有链接与图片**。等链接格式定下来再接。
-//! * **不查 emoji 表**。短码只带走名字，认不认识是渲染器的事——这样将来
-//!   换成手搓 SVG、加属性，解析层不用动。
+//! * **不查任何名字表**。行内调用只带走名字与参数，认不认识是渲染器的
+//!   事——这样将来换成手搓 SVG、加属性，解析层不用动。
 //! * **实体保留在解析层解析**。`&copy;` 的语义就是那个字符本身，不是一种
-//!   呈现方式，跟 emoji 不同。
+//!   呈现方式，跟行内调用不同。
 //!
 //! # 已知取舍
 //!
@@ -38,14 +46,15 @@
 //!   [`scan`] 的 `$` 分支加一条判断即可。
 //! * 命名实体是**常用子集**，查不到的按字面保留。
 //! * 标点判定用 ASCII 标点近似 CommonMark 的 Unicode `P*` 类别。
+//! * 行内调用与链接的**内容**都被包成未解析自然块，而位置用的是外层块的
+//!   span——行内层还没有列偏移。
 
 mod delim;
-mod emoji;
 mod entities;
 mod scan;
 mod smart;
 
-use crate::ast::{Ast, Block, NaturalBlock, NodeId, NodeKind, Span};
+use crate::ast::{Ast, Block, NaturalBlock, NodeId, NodeKind, Params, Span};
 
 /// 行内层的中间表示，只在行内层内部使用，不进入 arena。
 #[derive(Debug, Clone, PartialEq)]
@@ -57,8 +66,15 @@ pub(crate) enum Piece {
         kind: NodeKind,
         children: Vec<Piece>,
     },
-    /// Emoji 短码：**只有名字**，值由渲染器查。
-    Emoji(String),
+    /// 行内调用：名字 + 参数 + 可选的**首行内容**。
+    ///
+    /// 参数保持字符串；**要不要对某个参数值做行内解析，由展开器自己决定**
+    /// （展开器拿到 `Params`，可以自己调 [`parse`] 把某个值变成行内内容）。
+    InlineCall {
+        name: String,
+        params: Params,
+        content: Option<String>,
+    },
     /// 链接：文本**还没展开**，由调度器当成自然块照常展开。
     Link { target: String, text: String },
     /// 硬换行。
@@ -92,8 +108,25 @@ fn lower(ast: &mut Ast, pieces: Vec<Piece>, span: Span) -> Vec<NodeId> {
 fn lower_one(ast: &mut Ast, piece: Piece, span: Span) -> NodeId {
     match piece {
         Piece::Text(text) => ast.new_text(text),
-        Piece::Emoji(alias) => ast.new_emoji(alias),
         Piece::LineBreak => ast.new_line_break(),
+        Piece::InlineCall {
+            name,
+            params,
+            content,
+        } => {
+            let call = ast.new_inline_call(name, params, span);
+            if let Some(content) = content {
+                // 首行内容先是一个**未解析的自然块**，交给调度器照常展开。
+                // 于是 `{{quote: **粗体**}}` 里的行内标记不需要任何新机制。
+                let inner = ast.new_node(NodeKind::Unparsed(Block::Natural(NaturalBlock {
+                    text: content,
+                    span,
+                    inline: true,
+                })));
+                ast.append(call, inner);
+            }
+            call
+        }
         Piece::Link { target, text } => {
             let link = ast.new_link(target);
             // 链接文本先是一个**未解析的自然块**，交给调度器照常展开。
@@ -101,6 +134,7 @@ fn lower_one(ast: &mut Ast, piece: Piece, span: Span) -> NodeId {
             let inner = ast.new_node(NodeKind::Unparsed(Block::Natural(NaturalBlock {
                 text,
                 span,
+                inline: true,
             })));
             ast.append(link, inner);
             link
@@ -187,18 +221,33 @@ mod tests {
     }
 
     #[test]
-    fn entities_are_resolved_but_emoji_names_are_not() {
+    fn entities_are_resolved_but_inline_call_names_are_not() {
         assert_eq!(html("&amp;"), "&amp;");
         assert_eq!(html("&#35;"), "#");
         assert_eq!(html("&hellip;"), "…");
-        // 短码只带走名字，长什么样是渲染器查出来的
+        // 名字只带走，长什么样是渲染器查出来的
         assert_eq!(
             html(":smile:"),
             "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>"
         );
-        // 渲染器不认识的短码，原样回显
+        // 糖形态与全形在这里合流
+        assert_eq!(
+            html("{{smile}}"),
+            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>"
+        );
+        // 渲染器不认识的名字，原样回显
         assert_eq!(html(":nope:"), ":nope:");
         assert_eq!(html("12:30:45"), "12:30:45");
+    }
+
+    #[test]
+    fn a_braced_inline_call_carries_params_and_content() {
+        // 内容走既有的展开管线，所以行内标记照常生效；
+        // 没有展开器的名字由渲染器原样回显，但内容不会被吞掉。
+        assert_eq!(
+            html("{{quote author=张三: **粗体**}}"),
+            "{{quote author=张三: <strong class=\"nm-strong\">粗体</strong>}}"
+        );
     }
 
     #[test]

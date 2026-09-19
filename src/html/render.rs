@@ -56,7 +56,9 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
         Some(NodeKind::Mark) => container(ast, id, "mark", "nm-mark", out),
         Some(NodeKind::Code) => container(ast, id, "code", "nm-code-inline", out),
         Some(NodeKind::Math) => write_math(ast, id, out),
-        Some(NodeKind::Emoji(alias)) => write_emoji(alias, out),
+        Some(NodeKind::InlineCall { name, params, .. }) => {
+            write_inline_call(ast, id, name, params, out)
+        }
         Some(NodeKind::LineBreak) => out.push_str("<br>"),
         Some(NodeKind::Link { target }) => write_link(ast, id, target, out),
 
@@ -174,24 +176,78 @@ fn write_math(ast: &Ast, id: NodeId, out: &mut String) {
     out.push_str("\\)</span>");
 }
 
-/// Emoji 短码：查表决定长什么样。
+/// 行内调用。
 ///
-/// 表里没有的名字**原样回显**，不吞掉作者的输入。想换成手搓 SVG 或加上
-/// `title`，改 [`emoji`] 表与这个函数即可。
-fn write_emoji(alias: &str, out: &mut String) {
-    match emoji::value(alias) {
-        Some(value) => {
-            out.push_str("<span class=\"nm-emoji\" data-alias=\"");
-            escape_attr(alias, out);
-            out.push_str("\">");
-            escape_text(value, out);
-            out.push_str("</span>");
+/// 这是渲染器**按名字解释**的地方，和 [`crate::ast::NodeKind::Instance`] 同一个
+/// 思路：
+///
+/// * 名字在 [`emoji`] 表里 → 渲染成图标。`{{smile}}` 与 `:smile:` 在这里合流。
+/// * 名字不认识 → 把调用按**规范形式**原样回显（`{{name k=v: 内容}}`，或
+///   无参数无内容时的 `:name:`）。内容仍照常渲染，所以什么都不吞。
+///
+/// 想让某个名字接上真正的展开逻辑（比如 `{{quote: …}}` 要包一层结构），
+/// 就在 [`crate::dispatch`] 里注册同名展开器——**有的名字归展开器，没的归
+/// 渲染器**。
+fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut String) {
+    if let Some(value) = emoji::value(name) {
+        out.push_str("<span class=\"nm-emoji\" data-alias=\"");
+        escape_attr(name, out);
+        out.push_str("\">");
+        escape_text(value, out);
+        for child in ast.children(id).collect::<Vec<_>>() {
+            write_node(ast, child, out);
         }
-        None => {
-            out.push(':');
-            escape_text(alias, out);
-            out.push(':');
+        out.push_str("</span>");
+        return;
+    }
+
+    let children: Vec<NodeId> = ast.children(id).collect();
+
+    // 糖形态回显成糖形态。
+    if params.is_empty() && children.is_empty() {
+        out.push(':');
+        escape_text(name, out);
+        out.push(':');
+        return;
+    }
+
+    let mut header = String::from("{{");
+    header.push_str(name);
+    for (key, value) in params.iter() {
+        header.push(' ');
+        header.push_str(key);
+        header.push('=');
+        push_param_value(value, &mut header);
+    }
+    escape_text(&header, out);
+
+    if !children.is_empty() {
+        out.push_str(": ");
+        for child in children {
+            write_node(ast, child, out);
         }
+    }
+
+    out.push_str("}}");
+}
+
+/// 把参数值写回调用语法：含空白或引号时补双引号并转义。
+fn push_param_value(value: &str, out: &mut String) {
+    if value.is_empty() || value.chars().any(|c| c.is_whitespace() || c == '"') {
+        out.push('"');
+        for ch in value.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\r' => out.push_str("\\r"),
+                _ => out.push(ch),
+            }
+        }
+        out.push('"');
+    } else {
+        out.push_str(value);
     }
 }
 
@@ -373,9 +429,9 @@ mod tests {
     }
 
     #[test]
-    fn emoji_aliases_are_looked_up_here() {
+    fn known_inline_call_names_are_looked_up_here() {
         let mut ast = Ast::new();
-        let id = ast.new_emoji("rocket");
+        let id = ast.new_inline_call("rocket", Params::new(), Span::new(1, 1, 0, 0));
         ast.push_block(id);
 
         assert_eq!(
@@ -385,12 +441,27 @@ mod tests {
     }
 
     #[test]
-    fn unknown_emoji_aliases_are_echoed_verbatim() {
+    fn unknown_inline_call_names_are_echoed_in_canonical_form() {
         let mut ast = Ast::new();
-        let id = ast.new_emoji("nope");
+        let id = ast.new_inline_call("nope", Params::new(), Span::new(1, 1, 0, 0));
         ast.push_block(id);
 
         assert_eq!(render(&ast), ":nope:");
+    }
+
+    #[test]
+    fn unknown_inline_calls_with_params_or_content_echo_their_braced_form() {
+        let params: Params = [("author".to_string(), "张三".to_string())]
+            .into_iter()
+            .collect();
+
+        let mut ast = Ast::new();
+        let id = ast.new_inline_call("quote", params, Span::new(1, 1, 0, 0));
+        let text = ast.new_text("引用");
+        ast.append(id, text);
+        ast.push_block(id);
+
+        assert_eq!(render(&ast), "{{quote author=张三: 引用}}");
     }
 
     #[test]

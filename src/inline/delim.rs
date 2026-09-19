@@ -151,7 +151,7 @@ mod tests {
                     Piece::Node { kind, children } => {
                         format!("[{} {}]", kind_name(kind), render(children))
                     }
-                    Piece::Emoji(name) => format!("E({name})"),
+                    Piece::InlineCall { name, .. } => format!("I({name})"),
                     Piece::Link { target, text } => format!("L({text} => {target})"),
                     Piece::LineBreak => "<br>".to_string(),
                     Piece::Delim { ch, count, .. } => format!("{ch}{count}"),

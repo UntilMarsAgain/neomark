@@ -144,6 +144,41 @@ fn emoji_lookup_happens_in_the_renderer_not_the_parser() {
 }
 
 #[test]
+fn the_sugar_form_and_the_braced_form_are_the_same_thing() {
+    assert_eq!(
+        render(":smile: 与 {{smile}}"),
+        concat!(
+            "<p class=\"nm-p\">",
+            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span> 与 ",
+            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>",
+            "</p>"
+        )
+    );
+}
+
+#[test]
+fn an_unknown_inline_call_is_echoed_with_its_content_still_rendered() {
+    // 没有展开器的名字由渲染器原样回显；内容照常渲染，所以什么都不吞。
+    assert_eq!(
+        render("{{quote author=张三: **引用**}}"),
+        "<p class=\"nm-p\">{{quote author=张三: <strong class=\"nm-strong\">引用</strong>}}</p>"
+    );
+}
+
+#[test]
+fn a_braced_inline_call_does_not_swallow_the_rest_of_the_line() {
+    // 这正是选 `{{ }}` 而不是 `:` 的理由：闭合符是独立记号。
+    assert_eq!(
+        render("看 {{smile}} 这里"),
+        concat!(
+            "<p class=\"nm-p\">看 ",
+            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>",
+            " 这里</p>"
+        )
+    );
+}
+
+#[test]
 fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
     assert_eq!(render("硬\\\n换行"), "<p class=\"nm-p\">硬<br>换行</p>");
     assert_eq!(render("软\n换行"), "<p class=\"nm-p\">软\n换行</p>");

@@ -78,6 +78,8 @@ fn parse_natural(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId,
     let id = ast.new_node(NodeKind::Unparsed(Block::Natural(NaturalBlock {
         text: join_lines(&lines[start..end]),
         span: span_of(&lines[start..end]),
+        // 切分层产出的一律是块级内容。
+        inline: false,
     })));
     (id, end)
 }
