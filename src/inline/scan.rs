@@ -52,41 +52,33 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
                 }
             },
 
-            // 代码跨度：N 个反引号配对 N 个，内部不做任何解析
-            '`' => {
-                let (count, after_open) = run_len(&chars, i);
-                match find_closer(&chars, after_open, '`', count) {
-                    Some(close) => {
-                        flush(&mut out, &mut literal, &mut smart);
-                        out.push(Piece::Node {
-                            kind: NodeKind::Code,
-                            children: vec![Piece::Text(span_text(&chars[after_open..close]))],
-                        });
-                        i = close + count;
-                    }
-                    None => {
-                        push_run(&mut literal, '`', count);
-                        i = after_open;
-                    }
-                }
-            }
+            // 代码跨度与数学：**同一个分支**，所以「包裹行为一致」是代码本身的
+            // 事实，而不是两份拷贝碰巧写得一样。
+            //
+            // 规则：开头的 N 个定界符必须由**恰好 N 个**闭合（长度不同不闭合，
+            // 原样落回文本）；内容里的换行归空格；首尾同时是空格且内容不全是
+            // 空格时各剥一个；内部**没有任何转义**，反斜杠也是字面字符。
+            '`' | '$' => {
+                let kind = if c == '`' {
+                    NodeKind::Code
+                } else {
+                    NodeKind::Math
+                };
 
-            // 数学：$ 的配对行为与反引号完全一致
-            '$' => {
                 let (count, after_open) = run_len(&chars, i);
-                match find_closer(&chars, after_open, '$', count) {
+                match find_closer(&chars, after_open, c, count) {
                     Some(close) => {
                         flush(&mut out, &mut literal, &mut smart);
-                        // 原样存内容。要不要包成 `\(...\)`、用什么标签，
+                        // 内容原样存下来：要不要包成 `\(...\)`、用什么标签，
                         // 都是渲染器的决定。
                         out.push(Piece::Node {
-                            kind: NodeKind::Math,
+                            kind,
                             children: vec![Piece::Text(span_text(&chars[after_open..close]))],
                         });
                         i = close + count;
                     }
                     None => {
-                        push_run(&mut literal, '$', count);
+                        push_run(&mut literal, c, count);
                         i = after_open;
                     }
                 }
@@ -499,6 +491,21 @@ mod tests {
         assert_eq!(show("`\\`"), "[code T(\\)]");
         assert_eq!(show("`` \\` ``"), "[code T(\\`)]");
         assert_eq!(show("`\\*x\\*`"), "[code T(\\*x\\*)]");
+    }
+
+    #[test]
+    fn math_wraps_exactly_like_code_spans() {
+        // 与代码跨度走**同一个分支**，所以下面逐条与上面的反引号用例对应。
+        // 你说的例子：`$$ $ $$` 的内容是一个 `$`。
+        assert_eq!(show("$$ $ $$"), "[math T($)]");
+        assert_eq!(show("$$$ $$ $$$"), "[math T($$)]");
+        // 长度不同不闭合，原样落回
+        assert_eq!(show("$$$ $"), "T($$$ $)");
+        // 首尾各一个空格要剥掉；内容全是空格则不剥
+        assert_eq!(show("$ a $"), "[math T(a)]");
+        assert_eq!(show("$$ $$"), "[math T( )]");
+        // 内部没有转义
+        assert_eq!(show("$\\$"), "[math T(\\)]");
     }
 
     #[test]

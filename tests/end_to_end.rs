@@ -228,6 +228,30 @@ fn an_escaped_quote_stays_a_straight_quote() {
 }
 
 #[test]
+fn a_lone_dollar_sign_is_written_with_two_dollars() {
+    // 与代码跨度同一套逻辑：`$$ $ $$` 的内容是一个 `$`
+    assert_eq!(
+        render("$$ $ $$"),
+        "<p class=\"nm-p\"><span class=\"nm-math\">\\($\\)</span></p>"
+    );
+    // 对比：同一段文本用反引号包起来就是代码
+    assert_eq!(
+        render("`` ` ``"),
+        "<p class=\"nm-p\"><code class=\"nm-code-inline\">`</code></p>"
+    );
+}
+
+#[test]
+fn names_keys_and_values_may_all_be_quoted() {
+    // 名字、键、值、链接目标四处共用同一套引号规则。这里用无展开器的行内调用
+    // 回显来观察解析结果：回显会按解析出来的东西重新补引号。
+    assert_eq!(
+        render("{{\"my name\" \"k 1\"=\"v 1\"}}"),
+        "<p class=\"nm-p\">{{\"my name\" \"k 1\"=\"v 1\"}}</p>"
+    );
+}
+
+#[test]
 fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
     assert_eq!(render("硬\\\n换行"), "<p class=\"nm-p\">硬<br>换行</p>");
     assert_eq!(render("软\n换行"), "<p class=\"nm-p\">软\n换行</p>");

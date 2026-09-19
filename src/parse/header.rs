@@ -9,13 +9,12 @@
 //!
 //! 规则：
 //!
-//! * 以 `::` 开头，`::` 之后到空白/`:`/`=` 为止是**调用名**（名字是标识符，
-//!   不支持引号）；
+//! * 以 `::` 开头，`::` 之后到空白/`:`/`=` 为止是**调用名**；
 //! * 其余以空白分隔的 token 是参数：`key=value` 为键值对，
 //!   单独的 `flag` 视为 `flag=true`；
-//! * **键与值都可以用双引号包裹**（引号内可以含空格与 `:`），并支持
-//!   `\"` `\\` `\n` `\t` `\r` 转义。引号规则只有一处实现（[`unquote`]），
-//!   调用头、行内调用的括号内部、链接目标共用它；
+//! * **名字、键、值、链接目标四处都可以用双引号包裹**（引号内可以含空格与
+//!   `:`），并支持 `\"` `\\` `\n` `\t` `\r` 转义。引号规则只有一处实现
+//!   （[`unquote`]），调用头、行内调用的括号内部、链接目标共用它；
 //! * **分隔冒号**把头部与首行内容分开：`::name k=v: 内容` 里的 `内容` 就是
 //!   块体的第一行。分隔冒号定义为 `::` 之后第一个**不在引号内、且后面紧跟
 //!   空白或行尾**的 `:`——所以 `url=http://x` 里的冒号不会被误认成分隔符，
@@ -240,16 +239,42 @@ impl Scanner {
     /// 读调用名：到空白、`:` 或 `=` 为止。
     ///
     /// 名字**不支持**引号——名字是标识符，不是数据；只有键和值才需要引号。
+    /// 读调用名：到空白、`:` 或 `=` 为止；也可以用双引号包裹。
+    ///
+    /// 引号内这些终止符都不算数、`\"` 按转义处理，所以 `::"a:b" k=v` 的名字是
+    /// `a:b`。名字、键、值、链接目标**四处共用同一套引号规则**。
     fn read_name(&mut self) -> String {
-        let mut name = String::new();
+        let mut raw = Vec::new();
+        let mut in_quote = false;
+        let mut escaped = false;
+
         while let Some(c) = self.peek() {
-            if c.is_whitespace() || c == ':' || c == '=' {
-                break;
+            if escaped {
+                raw.push(c);
+                self.bump();
+                escaped = false;
+                continue;
             }
-            name.push(c);
-            self.bump();
+            match c {
+                '\\' if in_quote => {
+                    raw.push(c);
+                    self.bump();
+                    escaped = true;
+                }
+                '"' => {
+                    raw.push(c);
+                    self.bump();
+                    in_quote = !in_quote;
+                }
+                c if !in_quote && (c.is_whitespace() || c == ':' || c == '=') => break,
+                _ => {
+                    raw.push(c);
+                    self.bump();
+                }
+            }
         }
-        name
+
+        unquote(&raw)
     }
 
     /// 读一个参数 token：到引号外的空白为止，引号内的空白保留。
@@ -381,11 +406,19 @@ mod tests {
     }
 
     #[test]
-    fn names_are_identifiers_and_stay_unquoted() {
-        // 名字不支持引号：引号会被当成名字的一部分。
-        let header = parse_call_header("::\"odd\" k=v");
-        assert_eq!(header.name, "\"odd\"");
+    fn names_may_be_quoted_too() {
+        let header = parse_call_header("::\"my name\" k=v");
+        assert_eq!(header.name, "my name");
         assert_eq!(header.params.get("k"), Some("v"));
+
+        // 引号里的冒号不会被当成分隔冒号
+        let header = parse_call_header("::\"a:b\": 内容");
+        assert_eq!(header.name, "a:b");
+        assert_eq!(header.content.as_deref(), Some("内容"));
+
+        // 名字里的引号可以转义
+        let header = parse_call_header("::\"a\\\"b\"");
+        assert_eq!(header.name, "a\"b");
     }
 
     #[test]

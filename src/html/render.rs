@@ -212,7 +212,8 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
     }
 
     let mut header = String::from("{{");
-    header.push_str(name);
+    // 名字也走同一条回显规则：名字现在同样可以用引号包裹。
+    push_header_token(name, &mut header);
     for (key, value) in params.iter() {
         header.push(' ');
         push_header_token(key, &mut header);
@@ -231,11 +232,11 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
     out.push_str("}}");
 }
 
-/// 把一个键或值写回调用语法。
+/// 把一个名字、键或值写回调用语法。
 ///
 /// 含空白、引号、反斜杠、`:`、`=`（或者为空）时套上双引号并转义——这几个字符
 /// 都会影响重新解析的结果，所以必须包住，**回显出来的东西要能再解析回同样的
-/// 键值**。
+/// 名字与键值**。
 fn push_header_token(token: &str, out: &mut String) {
     let needs_quotes = token.is_empty()
         || token
@@ -471,7 +472,7 @@ mod tests {
         .collect();
 
         let mut ast = Ast::new();
-        let id = ast.new_inline_call("a", original.clone(), Span::new(1, 1, 0, 0));
+        let id = ast.new_inline_call("my name", original.clone(), Span::new(1, 1, 0, 0));
         ast.push_block(id);
 
         let echoed = render(&ast);
@@ -480,7 +481,9 @@ mod tests {
             .and_then(|rest| rest.strip_suffix("}}"))
             .expect("无展开器的行内调用回显成 {{…}}");
 
-        assert_eq!(crate::parse::parse_call_header(inner).params, original);
+        let header = crate::parse::parse_call_header(inner);
+        assert_eq!(header.name, "my name");
+        assert_eq!(header.params, original);
     }
 
     #[test]
