@@ -2,7 +2,7 @@
 //!
 //! 块级结构（`<p>`）在这里决定，**行内结构**由 [`crate::inline`] 决定。
 
-use crate::ast::{Ast, NodeId};
+use crate::ast::{Ast, NodeId, NodeKind};
 use crate::dispatch::{Context, Handler};
 use crate::inline;
 
@@ -18,17 +18,33 @@ pub struct ParagraphHandler;
 
 impl Handler for ParagraphHandler {
     fn expand_natural(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
-        let Some(text) = ast.natural(node).map(|natural| natural.text.clone()) else {
+        let Some(natural) = ast.natural(node) else {
             return Vec::new();
         };
+        let text = natural.text.clone();
+        let span = natural.span;
+
+        let inline = inline::parse(ast, &text, span);
+
+        // 链接内部是**行内上下文**：自然块在那里不能再套一层段落，
+        // 否则会产出 <a><p>…</p></a> 这种非法结构。
+        if is_inside_link(ast, node) {
+            return inline;
+        }
 
         let paragraph = ast.new_paragraph();
-        for child in inline::parse(ast, &text) {
+        for child in inline {
             ast.append(paragraph, child);
         }
 
         vec![paragraph]
     }
+}
+
+/// 这个自然块是否直接位于链接内部（也就是行内上下文）。
+fn is_inside_link(ast: &Ast, node: NodeId) -> bool {
+    ast.parent(node)
+        .is_some_and(|parent| matches!(ast.kind(parent), Some(NodeKind::Link { .. })))
 }
 
 #[cfg(test)]

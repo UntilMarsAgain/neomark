@@ -58,6 +58,7 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
         Some(NodeKind::Math) => write_math(ast, id, out),
         Some(NodeKind::Emoji(alias)) => write_emoji(alias, out),
         Some(NodeKind::LineBreak) => out.push_str("<br>"),
+        Some(NodeKind::Link { target }) => write_link(ast, id, target, out),
 
         // ── 逃生口 ──
         Some(NodeKind::Element { tag, attrs }) => write_element(ast, id, tag, attrs, out),
@@ -143,6 +144,22 @@ fn is_void(tag: &str) -> bool {
     VOID_ELEMENTS
         .iter()
         .any(|void| void.eq_ignore_ascii_case(tag))
+}
+
+/// 行内链接。
+///
+/// 目标转义后写进 `href`。**目前不校验 scheme**——`javascript:` 这类目标
+/// 会照样写出去；要挡就在这里加一层白名单。
+fn write_link(ast: &Ast, id: NodeId, target: &str, out: &mut String) {
+    out.push_str("<a class=\"nm-link\" href=\"");
+    escape_attr(target, out);
+    out.push_str("\">");
+
+    for child in ast.children(id).collect::<Vec<_>>() {
+        write_node(ast, child, out);
+    }
+
+    out.push_str("</a>");
 }
 
 /// 行内数学。

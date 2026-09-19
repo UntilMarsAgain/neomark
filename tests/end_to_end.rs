@@ -160,3 +160,38 @@ fn a_call_block_still_swallows_its_subtree_into_one_box() {
     // 提示框里是原样回显，不做行内解析
     assert!(html.contains("内层 **没有** 行内解析"));
 }
+
+#[test]
+fn links_render_end_to_end() {
+    assert_eq!(
+        render("看 [[**粗体** 文本 => https://a.com]] 这里"),
+        concat!(
+            "<p class=\"nm-p\">看 ",
+            "<a class=\"nm-link\" href=\"https://a.com\">",
+            "<strong class=\"nm-strong\">粗体</strong> 文本",
+            "</a> 这里</p>"
+        )
+    );
+}
+
+#[test]
+fn the_last_arrow_wins_so_targets_may_follow_text_containing_arrows() {
+    assert_eq!(
+        render("[[a => b => /x]]"),
+        "<p class=\"nm-p\"><a class=\"nm-link\" href=\"/x\">a =&gt; b</a></p>"
+    );
+}
+
+#[test]
+fn a_link_inside_a_code_span_stays_literal() {
+    // 代码跨度里的 `>` 照样要 HTML 转义，所以看到的是 =&gt;
+    assert_eq!(
+        render("`[[a => b]]`"),
+        "<p class=\"nm-p\"><code class=\"nm-code-inline\">[[a =&gt; b]]</code></p>"
+    );
+}
+
+#[test]
+fn a_malformed_link_stays_literal_text() {
+    assert_eq!(render("[[没有箭头]]"), "<p class=\"nm-p\">[[没有箭头]]</p>");
+}

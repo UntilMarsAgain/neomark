@@ -15,6 +15,7 @@
   --nm-error-border: #e0a800;
   --nm-mark-bg: #fff3b0;
   --nm-mark-fg: #1f2328;
+  --nm-link-fg: #0969da;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,6 +30,7 @@
     --nm-error-border: #9e6a03;
     --nm-mark-bg: #5c4a00;
     --nm-mark-fg: #ffe9a8;
+    --nm-link-fg: #4493f8;
   }
 }
 
@@ -92,6 +94,12 @@ body {
 .nm-emoji {
   line-height: 1;
   font-style: normal;
+}
+
+/* 链接。 */
+.nm-link {
+  color: var(--nm-link-fg);
+  text-underline-offset: 0.2em;
 }
 
 /* ── 块级 ─────────────────────────────────────────────────

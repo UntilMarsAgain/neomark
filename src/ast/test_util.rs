@@ -36,6 +36,7 @@ fn head(ast: &Ast, id: NodeId) -> String {
             }
             out
         }
+        Some(NodeKind::Link { target }) => format!("link {target}"),
         Some(NodeKind::Element { tag, attrs }) => {
             let mut out = format!("element {tag}");
             for attr in attrs {
@@ -72,6 +73,7 @@ pub(crate) fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Paragraph => "paragraph",
         NodeKind::Instance { .. } => "instance",
         NodeKind::Element { .. } => "element",
+        NodeKind::Link { .. } => "link",
         NodeKind::Emphasis => "emphasis",
         NodeKind::Strong => "strong",
         NodeKind::Strikethrough => "strikethrough",

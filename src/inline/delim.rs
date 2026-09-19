@@ -152,6 +152,7 @@ mod tests {
                         format!("[{} {}]", kind_name(kind), render(children))
                     }
                     Piece::Emoji(name) => format!("E({name})"),
+                    Piece::Link { target, text } => format!("L({text} => {target})"),
                     Piece::LineBreak => "<br>".to_string(),
                     Piece::Delim { ch, count, .. } => format!("{ch}{count}"),
                 })

@@ -68,6 +68,15 @@ pub enum NodeKind {
     Emoji(String),
     /// 硬换行。
     LineBreak,
+    /// 行内链接。孩子是链接文本，展开后是行内内容。
+    ///
+    /// 链接文本在 AST 里先是一个**未解析的自然块**（见 `NodeKind::Unparsed`），
+    /// 由调度器照常展开——所以链接里可以写粗体、代码，不需要任何新机制。
+    Link {
+        /// 目标。目前是原样字符串；链接功能的完整设计（内链、文档引用等）
+        /// 落地后可能变成结构化类型。
+        target: String,
+    },
 
     // ── 逃生口 ───────────────────────────────────────────
     /// 通用 HTML 元素：标签 + 属性，孩子是它的子节点。
@@ -245,6 +254,14 @@ impl Ast {
         }
     }
 
+    /// 链接的目标。
+    pub fn link(&self, id: NodeId) -> Option<&str> {
+        match self.arena.get_data(id)? {
+            NodeKind::Link { target } => Some(target),
+            _ => None,
+        }
+    }
+
     /// 报错节点。
     pub fn error(&self, id: NodeId) -> Option<&ErrorNode> {
         match self.arena.get_data(id)? {
@@ -289,6 +306,13 @@ impl Ast {
     /// 新建一个 Emoji 节点。
     pub fn new_emoji(&mut self, alias: impl Into<String>) -> NodeId {
         self.new_node(NodeKind::Emoji(alias.into()))
+    }
+
+    /// 新建一个链接节点。
+    pub fn new_link(&mut self, target: impl Into<String>) -> NodeId {
+        self.new_node(NodeKind::Link {
+            target: target.into(),
+        })
     }
 
     /// 新建一个硬换行节点。

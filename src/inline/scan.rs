@@ -109,6 +109,19 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
                 }
             },
 
+            // 链接：[[ Text => Target ]]
+            '[' if chars.get(i + 1) == Some(&'[') => match parse_link(&chars, i) {
+                Some((target, text, end)) => {
+                    flush(&mut out, &mut literal, &mut smart);
+                    out.push(Piece::Link { target, text });
+                    i = end;
+                }
+                None => {
+                    literal.push('[');
+                    i += 1;
+                }
+            },
+
             c if is_delimiter(c) => {
                 let (count, after_run) = run_len(&chars, i);
                 // 单个 `=` 不成标记。
@@ -138,6 +151,39 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
 
     flush(&mut out, &mut literal, &mut smart);
     out
+}
+
+/// 解析一个链接 `[[ Text => Target ]]`。
+///
+/// 返回（目标, 文本, 结束下标）。三条规则：
+///
+/// * 区域由**第一个 `]]`** 界定——这同时就是「不允许链接嵌套」的实现：
+///   嵌套链接必须含 `]]`，而区域里不可能含 `]]`。
+/// * 多个 `=>` **以最后一个为准**，所以文本里可以出现 `=>`。
+/// * 文本与目标各自去掉首尾空白。
+///
+/// 没有 `=>`、没有收尾 `]]`、或者根本没写成 `[[`，都返回 `None`，
+/// 由调用方原样落回字面文本。
+fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
+    let mut close = None;
+    let mut i = start + 2;
+    while i + 1 < chars.len() {
+        if chars[i] == ']' && chars[i + 1] == ']' {
+            close = Some(i);
+            break;
+        }
+        i += 1;
+    }
+    let close = close?;
+
+    let region: String = chars[start + 2..close].iter().collect();
+    // `=>` 是 ASCII，所以字节下标切分是安全的。
+    let split = region.rfind("=>")?;
+
+    let text = region[..split].trim().to_string();
+    let target = region[split + 2..].trim().to_string();
+
+    Some((target, text, close + 2))
 }
 
 /// 把累积的普通文本收成一个片段，顺便做智能标点。
@@ -232,6 +278,7 @@ mod tests {
                     format!("[{} {}]", kind_name(kind), texts(children).join(""))
                 }
                 Piece::Emoji(name) => format!("E({name})"),
+                Piece::Link { target, text } => format!("L({text} => {target})"),
                 Piece::LineBreak => "<br>".to_string(),
                 Piece::Delim { ch, count, .. } => format!("D({ch}{count})"),
             })
@@ -305,5 +352,40 @@ mod tests {
     fn smart_punctuation_runs_on_plain_text_only() {
         assert_eq!(show("等一下..."), "T(等一下…)");
         assert_eq!(show("`...`"), "[code T(...)]");
+    }
+
+    #[test]
+    fn links_carry_their_text_and_target() {
+        assert_eq!(show("[[文本 => 目标]]"), "L(文本 => 目标)");
+        // 前后空白被忽略
+        assert_eq!(show("[[  文本  =>  目标  ]]"), "L(文本 => 目标)");
+        // 周围是普通文本
+        assert_eq!(show("看 [[a => b]] 这里"), "T(看 )L(a => b)T( 这里)");
+    }
+
+    #[test]
+    fn the_last_arrow_wins_so_text_may_contain_arrows() {
+        assert_eq!(show("[[a => b => c]]"), "L(a => b => c)");
+        assert_eq!(show("[[=> 只有目标]]"), "L( => 只有目标)");
+    }
+
+    #[test]
+    fn malformed_links_fall_back_to_literal_text() {
+        assert_eq!(show("[[没有箭头]]"), "T([[没有箭头]])");
+        assert_eq!(show("[[a => 没有收尾"), "T([[a => 没有收尾)");
+        assert_eq!(show("[不是链接]"), "T([不是链接])");
+    }
+
+    #[test]
+    fn the_first_closing_bracket_ends_the_region_which_is_why_links_cannot_nest() {
+        // 区域由第一个 `]]` 界定 ⇒ 区域里不可能含 `]]` ⇒ 不可能含一个完整链接。
+        // 这里 `=> c` 落在区域里，于是最后一个箭头是它。
+        assert_eq!(show("[[a [[b => c]] => d]]"), "L(a [[b => c)T( => d]])");
+    }
+
+    #[test]
+    fn links_do_not_trigger_inside_code_or_math() {
+        assert_eq!(show("`[[a => b]]`"), "[code T([[a => b]])]");
+        assert_eq!(show("$[[a => b]]$"), "[math T([[a => b]])]");
     }
 }

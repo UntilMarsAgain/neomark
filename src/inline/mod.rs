@@ -45,7 +45,7 @@ mod entities;
 mod scan;
 mod smart;
 
-use crate::ast::{Ast, NodeId, NodeKind};
+use crate::ast::{Ast, Block, NaturalBlock, NodeId, NodeKind, Span};
 
 /// 行内层的中间表示，只在行内层内部使用，不进入 arena。
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +59,8 @@ pub(crate) enum Piece {
     },
     /// Emoji 短码：**只有名字**，值由渲染器查。
     Emoji(String),
+    /// 链接：文本**还没展开**，由调度器当成自然块照常展开。
+    Link { target: String, text: String },
     /// 硬换行。
     LineBreak,
     /// 尚未配对的分隔符游程。
@@ -73,25 +75,39 @@ pub(crate) enum Piece {
 /// 解析一段行内文本，把结果挂进 `ast`，返回顶层节点（按文档顺序）。
 ///
 /// 调用方负责把它们挂到合适的位置（例如段落下）。
-pub fn parse(ast: &mut Ast, text: &str) -> Vec<NodeId> {
-    lower(ast, delim::resolve(scan::scan(text)))
+///
+/// `span` 是这段文本在原文里的位置。行内层目前**不跟踪列偏移**，所以链接
+/// 文本被包成未解析自然块时用的是这个位置（即外层块的位置）——偏大但有效。
+pub fn parse(ast: &mut Ast, text: &str, span: Span) -> Vec<NodeId> {
+    lower(ast, delim::resolve(scan::scan(text)), span)
 }
 
-fn lower(ast: &mut Ast, pieces: Vec<Piece>) -> Vec<NodeId> {
+fn lower(ast: &mut Ast, pieces: Vec<Piece>, span: Span) -> Vec<NodeId> {
     pieces
         .into_iter()
-        .map(|piece| lower_one(ast, piece))
+        .map(|piece| lower_one(ast, piece, span))
         .collect()
 }
 
-fn lower_one(ast: &mut Ast, piece: Piece) -> NodeId {
+fn lower_one(ast: &mut Ast, piece: Piece, span: Span) -> NodeId {
     match piece {
         Piece::Text(text) => ast.new_text(text),
         Piece::Emoji(alias) => ast.new_emoji(alias),
         Piece::LineBreak => ast.new_line_break(),
+        Piece::Link { target, text } => {
+            let link = ast.new_link(target);
+            // 链接文本先是一个**未解析的自然块**，交给调度器照常展开。
+            // 这样链接里写粗体、代码都不用任何新机制。
+            let inner = ast.new_node(NodeKind::Unparsed(Block::Natural(NaturalBlock {
+                text,
+                span,
+            })));
+            ast.append(link, inner);
+            link
+        }
         Piece::Node { kind, children } => {
             let node = ast.new_node(kind);
-            for child in lower(ast, children) {
+            for child in lower(ast, children, span) {
                 ast.append(node, child);
             }
             node
@@ -105,17 +121,25 @@ fn lower_one(ast: &mut Ast, piece: Piece) -> NodeId {
 mod tests {
     use super::*;
 
-    /// 只走行内层，包进一个段落再渲染，然后剥掉外层。
+    /// 走完整链路（行内层 + 调度器）再渲染，然后剥掉外层段落。
     ///
-    /// 必须包一层：渲染器在**顶层**块之间插换行，直接当顶层节点会凭空多出
-    /// 换行，而换行正是软换行测试要区分的东西。
+    /// 必须包一层段落：渲染器在**顶层**块之间插换行，直接当顶层节点会凭空
+    /// 多出换行，而换行正是软换行测试要区分的东西。
+    ///
+    /// 也必须跑调度器：链接文本在 AST 里是一个**未解析的自然块**，要由调度器
+    /// 展开——这正是「链接里能写粗体」的来源。
     fn html(text: &str) -> String {
         let mut ast = Ast::new();
         let wrapper = ast.new_paragraph();
-        for id in parse(&mut ast, text) {
+        for id in parse(&mut ast, text, Span::new(1, 1, 0, text.len())) {
             ast.append(wrapper, id);
         }
         ast.push_block(wrapper);
+
+        let mut registry = crate::dispatch::Registry::new();
+        crate::handlers::register_defaults(&mut registry);
+        let mut ctx = crate::dispatch::Context::new(text);
+        crate::dispatch::Dispatcher::new(registry).run(&mut ast, &mut ctx);
 
         crate::html::render(&ast)
             .strip_prefix("<p class=\"nm-p\">")
@@ -217,5 +241,49 @@ mod tests {
             html("*a `b` c*"),
             "<em class=\"nm-em\">a <code class=\"nm-code-inline\">b</code> c</em>"
         );
+    }
+
+    #[test]
+    fn links_render_with_their_target() {
+        assert_eq!(
+            html("[[文本 => https://a.com]]"),
+            "<a class=\"nm-link\" href=\"https://a.com\">文本</a>"
+        );
+    }
+
+    #[test]
+    fn link_text_goes_through_the_normal_pipeline() {
+        // 链接文本是未解析的自然块，所以粗体、代码照常生效——
+        // 这是复用既有展开管线换来的，没有为链接新写一套行内解析。
+        assert_eq!(
+            html("[[**粗** 和 `码` => /x]]"),
+            concat!(
+                "<a class=\"nm-link\" href=\"/x\">",
+                "<strong class=\"nm-strong\">粗</strong> 和 ",
+                "<code class=\"nm-code-inline\">码</code>",
+                "</a>"
+            )
+        );
+    }
+
+    #[test]
+    fn link_text_is_not_wrapped_in_a_block() {
+        // 行内上下文里不该冒出块级段落
+        assert!(!html("[[文本 => /x]]").contains("<p"));
+    }
+
+    #[test]
+    fn link_targets_are_escaped() {
+        assert_eq!(
+            html("[[a => x\"y&z]]"),
+            "<a class=\"nm-link\" href=\"x&quot;y&amp;z\">a</a>"
+        );
+    }
+
+    #[test]
+    fn one_link_never_contains_another() {
+        // 区域由第一个 `]]` 界定，所以嵌套链接在语法上就不可能出现
+        let rendered = html("[[a [[b => c]] => d]]");
+        assert_eq!(rendered.matches("<a class=").count(), 1);
     }
 }
