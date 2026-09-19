@@ -90,6 +90,9 @@ mod parse;
 
 /// 底层树库。`Ast::arena()` 暴露的就是它的 [`indextree::Arena`]。
 pub use indextree;
+// 展开器的模式要用 `Regex`，所以把 regex 一并转出去：调用者不必自己加依赖，
+// 也不会出现两个版本的正则类型不匹配。
+pub use regex;
 
 pub use ast::{
     Ast, Attr, Block, CallBlock, ErrorKind, ErrorNode, KindTag, NaturalBlock, NodeId, NodeKind,

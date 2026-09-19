@@ -56,6 +56,7 @@ pub struct Wrap {
     classes: Vec<String>,
     classes_from: Vec<Derive>,
     attrs: Vec<Attr>,
+    class_prefix: String,
     inline: Option<NaturalExpander>,
 }
 
@@ -92,8 +93,17 @@ impl Wrap {
             classes: Vec::new(),
             classes_from: Vec::new(),
             attrs: Vec::new(),
+            class_prefix: String::new(),
             inline: None,
         }
+    }
+
+    /// 标签名取**正则实际匹配到的那一段**。
+    ///
+    /// 等价于 `tag_from(|m: &Matched| m.matched().to_string())`，但不用给闭包
+    /// 参数写类型。内置标题用的就是它。
+    pub fn tag_from_match() -> Self {
+        Self::tag_from(|matched: &Matched<'_>| matched.matched().to_string())
     }
 
     /// 追加一个固定类名。
@@ -102,10 +112,46 @@ impl Wrap {
         self
     }
 
+    /// 加一个「正则**实际匹配到的那一段**」当类名（会净化）。
+    ///
+    /// 等价于 `class_from(|m: &Matched| m.matched().to_string())`。
+    pub fn class_from_match(self) -> Self {
+        self.class_from(|matched: &Matched<'_>| sanitize_class(matched.matched()))
+    }
+
+    /// 给**派生出来的**类名加统一前缀。
+    ///
+    /// 只影响 [`class_from_match`](Wrap::class_from_match) /
+    /// [`class_from_name`](Wrap::class_from_name) / [`class_from`](Wrap::class_from)
+    /// 的结果，不影响 [`class`](Wrap::class) 写死的类名。
+    /// 内置标题就是 `class_prefix("nm-")` + `class_from_match()` → `nm-h3`。
+    pub fn class_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.class_prefix = prefix.into();
+        self
+    }
+
     /// 追加一个由[命中信息](Matched)算出的类名。
     ///
-    /// 想用捕获组就用这里：`m.capture(1)`、`m.capture_named("kind")` 都行。
-    /// 闭包参数同样**要写出类型**（`|m: &Matched|`）。
+    /// **想用捕获组就用这里**：`m.capture(1)`、`m.capture_named("kind")` 都行，
+    /// 多个组拼一个类名也行：
+    ///
+    /// ```
+    /// use neomark::{Matched, handlers::Wrap};
+    ///
+    /// // `^figure-(?P<kind>\w+)-v(?P<version>\d+)$` 命中 `figure-chart-v2`
+    /// let wrap = Wrap::tag("figure").class("figure").class_from(|m: &Matched| {
+    ///     format!(
+    ///         "{}-v{}",
+    ///         m.capture_named("kind").unwrap_or("unknown"),
+    ///         m.capture_named("version").unwrap_or("0"),
+    ///     )
+    /// });
+    /// # let _ = wrap;
+    /// ```
+    ///
+    /// 常见派生不必写闭包：[`class_from_match`](Wrap::class_from_match) /
+    /// [`class_from_name`](Wrap::class_from_name) 已经覆盖，闭包参数
+    /// **要写出类型**（`|m: &Matched|`）这一步留给不常见的写法。
     pub fn class_from(mut self, derive: impl Fn(&Matched<'_>) -> String + 'static) -> Self {
         self.classes_from.push(Box::new(derive));
         self
@@ -152,7 +198,11 @@ impl Wrap {
         };
 
         let mut classes: Vec<String> = self.classes.clone();
-        classes.extend(self.classes_from.iter().map(|derive| derive(matched)));
+        classes.extend(
+            self.classes_from
+                .iter()
+                .map(|derive| format!("{}{}", self.class_prefix, derive(matched))),
+        );
         classes.retain(|class| !class.is_empty());
 
         let mut attrs = self.attrs.clone();

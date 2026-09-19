@@ -370,6 +370,45 @@ fn headings_really_are_just_a_wrapper_now() {
 }
 
 #[test]
+fn a_wrapper_can_use_several_capture_groups_at_once() {
+    // 多个捕获组：按名字各取一个，拼成一个类名；缺的用兜底值补齐。
+    let html = render_with("::figure-chart-v2: 正文", |registry| {
+        registry.register_pattern(
+            Regex::new(r"^figure-(?P<kind>\w+)-v(?P<version>\d+)$").unwrap(),
+            handlers::Wrap::tag("figure")
+                .class("figure")
+                .class_from(|m: &Matched| {
+                    format!(
+                        "{}-v{}",
+                        m.capture_named("kind").unwrap_or("unknown"),
+                        m.capture_named("version").unwrap_or("0"),
+                    )
+                })
+                .inline(handlers::NaturalExpander::default()),
+        );
+    });
+
+    assert_eq!(html, "<figure class=\"figure chart-v2\">正文</figure>");
+}
+
+#[test]
+fn the_common_derivations_need_no_closure_at_all() {
+    // `tag_from_match` + `class_prefix` + `class_from_match` 覆盖了「标签与类名
+    // 都取自匹配片段」这个最常见的情形，不用写闭包、也不用标类型。
+    let html = render_with("::h2: 标题", |registry| {
+        registry.register_pattern(
+            Regex::new("^h[1-6]$").unwrap(),
+            handlers::Wrap::tag_from_match()
+                .class_prefix("nm-")
+                .class_from_match()
+                .inline(handlers::NaturalExpander::default()),
+        );
+    });
+
+    assert_eq!(html, "<h2 class=\"nm-h2\">标题</h2>");
+}
+
+#[test]
 fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
     assert_eq!(render("硬\\\n换行"), "<p class=\"nm-p\">硬<br>换行</p>");
     assert_eq!(render("软\n换行"), "<p class=\"nm-p\">软\n换行</p>");

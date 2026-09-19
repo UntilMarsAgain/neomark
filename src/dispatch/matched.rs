@@ -26,12 +26,14 @@ pub struct Matched<'h> {
 
 impl<'h> Matched<'h> {
     /// 由调用名与可选的捕获组装。
-    pub fn new(name: &'h str, captures: Option<Captures<'h>>) -> Self {
+    ///
+    /// 只给调度器用——展开器**只读不构造**。
+    pub(crate) fn new(name: &'h str, captures: Option<Captures<'h>>) -> Self {
         Self { name, captures }
     }
 
     /// 没有名字可用时的命中信息（自然块就是这种情况）。
-    pub const fn unnamed() -> Matched<'h> {
+    pub(crate) const fn unnamed() -> Matched<'h> {
         Matched {
             name: "",
             captures: None,
@@ -65,6 +67,29 @@ impl<'h> Matched<'h> {
     /// 按名字取捕获组。
     pub fn capture_named(&self, name: &str) -> Option<&'h str> {
         self.captures.as_ref()?.name(name).map(|m| m.as_str())
+    }
+
+    /// 捕获组个数，**含第 0 组**（整段匹配）。精确名命中时是 1。
+    pub fn group_count(&self) -> usize {
+        match &self.captures {
+            Some(captures) => captures.len(),
+            None => 1,
+        }
+    }
+
+    /// 按顺序遍历全部捕获组，**含未参与匹配的组**（那些是 `None`）。
+    ///
+    /// 第 0 项是整段匹配，所以精确名命中时只会得到一项（调用名本身）。
+    pub fn groups(&self) -> impl Iterator<Item = Option<&'h str>> + '_ {
+        (0..self.group_count()).map(move |index| self.capture(index))
+    }
+
+    /// 正则原生的 [`Captures`]。精确名命中时为 `None`。
+    ///
+    /// 逃生口：需要 `Captures` 自己的接口（下标、`expand`、按名字定位等）时用。
+    /// 只想读内容的话，上面那些方法就够了。
+    pub fn raw(&self) -> Option<&Captures<'h>> {
+        self.captures.as_ref()
     }
 }
 
@@ -108,10 +133,46 @@ mod tests {
     }
 
     #[test]
+    fn groups_are_enumerable_in_order_including_unmatched_ones() {
+        let name = "figure-chart-v2".to_string();
+        let regex = Regex::new(r"^figure-(?P<kind>\w+)-v(?P<version>\d+)$").unwrap();
+        let matched = Matched::new(&name, regex.captures(&name));
+
+        assert_eq!(matched.group_count(), 3);
+        assert_eq!(
+            matched.groups().collect::<Vec<_>>(),
+            vec![Some("figure-chart-v2"), Some("chart"), Some("2")]
+        );
+
+        // 可选组没参与匹配时是 None，但位置还在
+        let name = "figure-chart".to_string();
+        let regex = Regex::new(r"^figure-(?P<kind>\w+)(?:-v(?P<version>\d+))?$").unwrap();
+        let matched = Matched::new(&name, regex.captures(&name));
+
+        assert_eq!(
+            matched.groups().collect::<Vec<_>>(),
+            vec![Some("figure-chart"), Some("chart"), None]
+        );
+    }
+
+    #[test]
+    fn raw_gives_back_the_native_captures() {
+        let name = "h3".to_string();
+        let captures = Regex::new(r"^h(?P<level>[1-6])$").unwrap().captures(&name);
+        let matched = Matched::new(&name, captures);
+
+        let raw = matched.raw().expect("正则命中时一定有原生 Captures");
+        assert_eq!(&raw["level"], "3");
+
+        assert!(Matched::unnamed().raw().is_none());
+    }
+
+    #[test]
     fn unnamed_is_what_natural_blocks_get() {
         let matched = Matched::unnamed();
 
         assert_eq!(matched.name(), "");
         assert_eq!(matched.matched(), "");
+        assert_eq!(matched.group_count(), 1);
     }
 }

@@ -17,7 +17,7 @@ mod wrap;
 pub use natural::NaturalExpander;
 pub use wrap::Wrap;
 
-use crate::dispatch::{Matched, Registry};
+use crate::dispatch::Registry;
 
 /// 内置的标题模式：`h1` ~ `h6`。
 ///
@@ -38,8 +38,9 @@ pub fn register_defaults(registry: &mut Registry) {
     registry.register_natural(natural.clone());
     registry.register_pattern(
         regex::Regex::new(HEADING_PATTERN).expect("内置标题模式在测试里被验证过"),
-        Wrap::tag_from(|matched: &Matched| matched.matched().to_string())
-            .class_from(|matched: &Matched| format!("nm-{}", matched.matched()))
+        Wrap::tag_from_match()
+            .class_prefix("nm-")
+            .class_from_match()
             .inline(natural),
     );
 }

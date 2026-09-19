@@ -170,16 +170,6 @@ impl Registry {
         self.get(name).is_some()
     }
 
-    /// 已注册的**精确**调用名个数（不含正则、自然块与兜底）。
-    pub fn len(&self) -> usize {
-        self.handlers.len()
-    }
-
-    /// 是否没有任何精确注册的调用名。
-    pub fn is_empty(&self) -> bool {
-        self.handlers.is_empty()
-    }
-
     /// 已注册的精确调用名，顺序不定。
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.handlers.keys().map(String::as_str)

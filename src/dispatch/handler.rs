@@ -19,6 +19,74 @@ use crate::ast::{Ast, ErrorKind, ErrorNode, KindTag, NodeId, Span};
 /// **按名分发的那两个方法会收到 [`Matched`]**：里面有完整调用名、正则实际匹配
 /// 到的那一段，以及各捕获组。自然块没有名字，所以
 /// [`expand_natural`](Handler::expand_natural) 不收这个参数。
+///
+/// # 在展开器里拿捕获组
+///
+/// 注册用 `register_pattern`，取组用 [`Matched`] 的三个读法。**多个捕获组**按
+/// 名字取最稳（模式里改组的顺序也炸不了），按下标取省事，整组遍历用
+/// [`Matched::groups`]：
+///
+/// ```
+/// # use neomark::{Ast, Context, Dispatcher, Handler, Matched, NodeId, Registry, parse};
+/// # use neomark::regex::Regex;
+/// /// `::figure-chart-v2` → 把两个捕获组写进参数
+/// struct Figure;
+///
+/// impl Handler for Figure {
+///     fn expand_call(
+///         &self,
+///         node: NodeId,
+///         ast: &mut Ast,
+///         _ctx: &mut Context<'_>,
+///         matched: &Matched<'_>,
+///     ) -> Vec<NodeId> {
+///         // ① 按名字取（推荐）
+///         let kind = matched.capture_named("kind").unwrap_or("unknown");
+///         // ② 按下标取：0 是整段匹配，所以第一个括号是 1
+///         let version = matched.capture(2).unwrap_or("0");
+///         // ③ 整组遍历：含未参与匹配的 None
+///         assert_eq!(matched.group_count(), 3);
+///         assert_eq!(
+///             matched.groups().collect::<Vec<_>>(),
+///             vec![Some("figure-chart-v2"), Some("chart"), Some("2")],
+///         );
+///
+///         let mut params = ast.call(node).unwrap().params.clone();
+///         params.push("kind", kind);
+///         params.push("version", version);
+///
+///         let instance = ast.new_instance("figure", params);
+///         for child in ast.children(node).collect::<Vec<_>>() {
+///             ast.append(instance, child);
+///         }
+///         vec![instance]
+///     }
+/// }
+///
+/// let mut registry = Registry::new();
+/// registry.register_pattern(
+///     Regex::new(r"^figure-(?P<kind>\w+)-v(?P<version>\d+)$").unwrap(),
+///     Figure,
+/// );
+///
+/// let source = "::figure-chart-v2: 正文";
+/// let mut ast = parse(source);
+/// let mut ctx = Context::new(source);
+/// Dispatcher::new(registry).run(&mut ast, &mut ctx);
+///
+/// let html = neomark::html::render(&ast);
+/// assert!(html.contains("data-kind=\"chart\""), "{html}");
+/// assert!(html.contains("data-version=\"2\""), "{html}");
+/// ```
+///
+/// 需要正则原生的 `Captures`（下标、`expand`、按名字定位）时用
+/// [`Matched::raw`]。
+///
+/// # 精确名注册时呢
+///
+/// 精确名命中没有捕获组，但读法都还能用，只是退化成同一个值：`name()` 与
+/// `matched()` 都是调用名，`capture(0)` 也返回它，`capture(1)` 是 `None`。
+/// 所以展开器可以照常写，不必区分自己是怎么被注册的。
 pub trait Handler {
     /// 展开一个未展开的节点。默认按种类分发到下面三个方法。
     fn expand(
