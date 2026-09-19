@@ -35,7 +35,14 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
                     i += 2;
                 }
                 Some(next) if next.is_ascii_punctuation() => {
-                    literal.push(next);
+                    if smart::affects(next) {
+                        // 转义的标点必须原样活下来：不能进那个会被智能标点
+                        // 转换的缓冲区，否则 `\"` 会变成 `“`，转义就白写了。
+                        flush(&mut out, &mut literal, &mut smart);
+                        out.push(Piece::Text(next.to_string()));
+                    } else {
+                        literal.push(next);
+                    }
                     i += 2;
                 }
                 // 不是转义对象也不是换行：反斜杠原样保留
@@ -199,12 +206,67 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
 
     let region: String = chars[start + 2..close].iter().collect();
     // `=>` 是 ASCII，所以字节下标切分是安全的。
-    let split = region.rfind("=>")?;
+    let split = find_arrow(&region)?;
 
     let text = region[..split].trim().to_string();
-    let target = region[split + 2..].trim().to_string();
+    // 目标可以整体用引号包裹（引号内可含空格），引号规则与调用头的键值一致。
+    //
+    // 文本**不**去引号：它是行内内容，会走行内层，那里的引号属于智能标点
+    // 的地盘——`[[他说"你好" => /x]]` 里的引号必须原样交给智能标点。
+    let target = crate::parse::unquote_str(region[split + 2..].trim());
 
     Some((target, text, close + 2))
+}
+
+/// 找出分隔箭头的字节下标。
+///
+/// 从右往左找**第一个目标形态合法的箭头**：目标里出现引号时，它必须是一个完整
+/// 的引号串（`"…"`）。于是：
+///
+/// * 引号保护目标里的箭头：`[[a => "b => c"]]`；
+/// * 文本里出现箭头时仍是「最后一个为准」：`[[a => b => /x]]`；
+/// * 一个合法目标都找不到时（比如目标里有落单的引号），退回「最后一个箭头」，
+///   也就是没有引号规则时的行为——不让新规则把本来能解析的链接弄坏。
+///
+/// 从右往左而不是从左往右：**文本**部分不参与引号处理（它是行内内容），里面的
+/// 引号可能不配对，方向反过来才能在碰到它之前就定下分隔符。
+fn find_arrow(region: &str) -> Option<usize> {
+    let mut fallback = None;
+    let mut search_end = region.len();
+
+    while let Some(at) = region[..search_end].rfind("=>") {
+        let raw = region[at + 2..].trim();
+        if !raw.contains('"') || is_fully_quoted(raw) {
+            return Some(at);
+        }
+        fallback.get_or_insert(at);
+        search_end = at;
+    }
+
+    fallback
+}
+
+/// `text` 是否是一个完整的引号串：以 `"` 开头，且配对的收尾引号正好在末尾。
+fn is_fully_quoted(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.first() != Some(&'"') {
+        return false;
+    }
+
+    let mut escaped = false;
+    for (index, &c) in chars.iter().enumerate().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => return index == chars.len() - 1,
+            _ => {}
+        }
+    }
+
+    false
 }
 
 /// 识别行内调用的**糖形态** `:name:`。
@@ -416,6 +478,30 @@ mod tests {
     }
 
     #[test]
+    fn wrapping_a_lone_backtick_takes_two_backticks_and_two_spaces() {
+        // `` ` ``  →  内容是单个反引号。中间那个长度 1 的游程不闭合长度 2 的游程。
+        assert_eq!(show("`` ` ``"), "[code T(`)]");
+        // 要包住两个反引号就得用三个，依此类推
+        assert_eq!(show("``` `` ```"), "[code T(``)]");
+        assert_eq!(show("```` ``` ````"), "[code T(```)]");
+    }
+
+    #[test]
+    fn content_that_is_all_spaces_is_not_trimmed() {
+        // 两侧各剥一个空格的前提是「内容不全是空格」
+        assert_eq!(show("`` ``"), "[code T( )]");
+        assert_eq!(show("``  ``"), "[code T(  )]");
+    }
+
+    #[test]
+    fn there_are_no_escapes_inside_code() {
+        // 按需求：代码跨度内部一律原样，反斜杠也不例外
+        assert_eq!(show("`\\`"), "[code T(\\)]");
+        assert_eq!(show("`` \\` ``"), "[code T(\\`)]");
+        assert_eq!(show("`\\*x\\*`"), "[code T(\\*x\\*)]");
+    }
+
+    #[test]
     fn math_is_marked_as_math_with_raw_content() {
         assert_eq!(show("$x^2$"), "[math T(x^2)]");
         // $$ 可以包裹内部的 $
@@ -483,6 +569,16 @@ mod tests {
     }
 
     #[test]
+    fn escapes_are_not_touched_by_smart_punctuation() {
+        // 转义的意义就是原样：这一条如果不过，`\"` 会被智能标点改成 `“`
+        assert_eq!(show("\\\"a\\\""), "T(\")T(a)T(\")");
+        assert_eq!(show("\\-\\-"), "T(-)T(-)");
+        assert_eq!(show("don\\'t"), "T(don)T(')T(t)");
+        // 没转义就照常转换
+        assert_eq!(show("\"a\""), "T(“a”)");
+    }
+
+    #[test]
     fn smart_punctuation_runs_on_plain_text_only() {
         assert_eq!(show("等一下..."), "T(等一下…)");
         assert_eq!(show("`...`"), "[code T(...)]");
@@ -495,6 +591,37 @@ mod tests {
         assert_eq!(show("[[  文本  =>  目标  ]]"), "L(文本 => 目标)");
         // 周围是普通文本
         assert_eq!(show("看 [[a => b]] 这里"), "T(看 )L(a => b)T( 这里)");
+    }
+
+    #[test]
+    fn link_targets_may_be_quoted() {
+        // 目标里的空格要靠引号包住
+        assert_eq!(show("[[文本 => \"a b\"]]"), "L(文本 => a b)");
+        // 引号内用 \" 转义
+        assert_eq!(show("[[a => \"x\\\"y\"]]"), "L(a => x\"y)");
+        // 未闭合的引号按「到目标结尾为止」宽容处理
+        assert_eq!(show("[[a => \"b]]"), "L(a => b)");
+    }
+
+    #[test]
+    fn quotes_protect_arrows_inside_the_target() {
+        // 引号内的 `=>` 不是分隔符——和调用头里引号保护 `=` 与 `:` 是同一条规则
+        assert_eq!(show("[[a => \"b => c\"]]"), "L(a => b => c)");
+        // 但文本里的箭头仍然参与「最后一个为准」
+        assert_eq!(show("[[a => b => /x]]"), "L(a => b => /x)");
+    }
+
+    #[test]
+    fn link_text_keeps_its_quotes_because_it_is_inline_content() {
+        // 文本不去引号：那里的引号归智能标点管，必须原样交给行内层
+        assert_eq!(show("[[\"q\" => u]]"), "L(\"q\" => u)");
+        assert_eq!(show("[[他说\"你好\" => /x]]"), "L(他说\"你好\" => /x)");
+    }
+
+    #[test]
+    fn an_unbalanced_quote_in_the_text_does_not_break_the_split() {
+        // 反向扫描的意义：碰到文本里那个落单的引号之前，分隔符就已经找到了
+        assert_eq!(show("[[说\" => /x]]"), "L(说\" => /x)");
     }
 
     #[test]

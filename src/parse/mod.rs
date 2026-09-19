@@ -7,5 +7,6 @@ mod header;
 mod line;
 mod split;
 
+pub(crate) use header::unquote_str;
 pub use header::{CallHeader, parse_call_header};
 pub use split::parse;

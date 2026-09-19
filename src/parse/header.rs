@@ -9,10 +9,13 @@
 //!
 //! 规则：
 //!
-//! * 以 `::` 开头，`::` 之后到空白/`:`/`=` 为止是**调用名**；
+//! * 以 `::` 开头，`::` 之后到空白/`:`/`=` 为止是**调用名**（名字是标识符，
+//!   不支持引号）；
 //! * 其余以空白分隔的 token 是参数：`key=value` 为键值对，
 //!   单独的 `flag` 视为 `flag=true`；
-//! * 值可以用双引号包裹（可以含空格），支持 `\"` `\\` `\n` `\t` `\r` 转义；
+//! * **键与值都可以用双引号包裹**（引号内可以含空格与 `:`），并支持
+//!   `\"` `\\` `\n` `\t` `\r` 转义。引号规则只有一处实现（[`unquote`]），
+//!   调用头、行内调用的括号内部、链接目标共用它；
 //! * **分隔冒号**把头部与首行内容分开：`::name k=v: 内容` 里的 `内容` 就是
 //!   块体的第一行。分隔冒号定义为 `::` 之后第一个**不在引号内、且后面紧跟
 //!   空白或行尾**的 `:`——所以 `url=http://x` 里的冒号不会被误认成分隔符，
@@ -131,8 +134,8 @@ fn push_token(params: &mut Params, token: &[char]) {
     match find_top_level_eq(token) {
         // `key=value`
         Some(index) if index > 0 => {
-            let key: String = token[..index].iter().collect();
-            let value = parse_value(&token[index + 1..]);
+            let key = unquote(&token[..index]);
+            let value = unquote(&token[index + 1..]);
             params.push(key, value);
         }
         // 无值参数，等价于 `flag=true`；`=x` 这类异常 token 也走这里（整个 token 做键）。
@@ -163,16 +166,16 @@ fn find_top_level_eq(token: &[char]) -> Option<usize> {
 }
 
 /// 解析参数值：带引号则去引号并处理转义，否则按字面取用。
-fn parse_value(value: &[char]) -> String {
-    if value.first() == Some(&'"') {
-        unquote(value)
-    } else {
-        value.iter().collect()
-    }
+/// [`unquote`] 的 `&str` 版本，给链接目标这类不是 token 的场景用。
+pub(crate) fn unquote_str(text: &str) -> String {
+    unquote(&text.chars().collect::<Vec<_>>())
 }
 
-/// 去掉包裹的双引号并处理转义；未闭合的引号按“到行尾为止”宽容处理。
-fn unquote(token: &[char]) -> String {
+/// 去掉包裹的双引号并处理 `\"` 转义；未闭合的引号按「到行尾为止」宽容处理。
+///
+/// **未被引号包裹时原样返回**，所以对任何 token 都能无脑调用。名字、键、值、
+/// 以及链接目标全走这一个函数，引号规则因此只有一处。
+pub(crate) fn unquote(token: &[char]) -> String {
     let quoted = token.first() == Some(&'"');
     let mut out = String::new();
     let mut iter = token.iter().copied().peekable();
@@ -235,6 +238,8 @@ impl Scanner {
     }
 
     /// 读调用名：到空白、`:` 或 `=` 为止。
+    ///
+    /// 名字**不支持**引号——名字是标识符，不是数据；只有键和值才需要引号。
     fn read_name(&mut self) -> String {
         let mut name = String::new();
         while let Some(c) = self.peek() {
@@ -343,6 +348,44 @@ mod tests {
     fn equals_sign_inside_quotes_is_part_of_the_value() {
         let header = parse_call_header("::a t=\"x=y\"");
         assert_eq!(header.params.get("t"), Some("x=y"));
+    }
+
+    #[test]
+    fn quoted_key_may_contain_spaces_and_colons() {
+        let header = parse_call_header("::a \"my key\"=v");
+        assert_eq!(header.params.get("my key"), Some("v"));
+
+        // 键里的冒号不会被当成分隔冒号
+        let header = parse_call_header("::a \"kind:type\"=v");
+        assert_eq!(header.params.get("kind:type"), Some("v"));
+    }
+
+    #[test]
+    fn key_and_value_may_both_be_quoted() {
+        let header = parse_call_header("::a \"k 1\"=\"v 1\" \"k:2\"=\"v:2\"");
+        assert_eq!(header.params, params(&[("k 1", "v 1"), ("k:2", "v:2")]));
+        assert_eq!(header.content, None);
+    }
+
+    #[test]
+    fn escapes_work_in_quoted_keys_too() {
+        let header = parse_call_header("::a \"k\\\"1\"=v");
+        assert_eq!(header.params.get("k\"1"), Some("v"));
+    }
+
+    #[test]
+    fn a_quoted_key_still_needs_a_value_after_the_equals() {
+        // `"k"=` 是「键是 k、值空」
+        let header = parse_call_header("::a \"k\"=");
+        assert_eq!(header.params.get("k"), Some(""));
+    }
+
+    #[test]
+    fn names_are_identifiers_and_stay_unquoted() {
+        // 名字不支持引号：引号会被当成名字的一部分。
+        let header = parse_call_header("::\"odd\" k=v");
+        assert_eq!(header.name, "\"odd\"");
+        assert_eq!(header.params.get("k"), Some("v"));
     }
 
     #[test]

@@ -179,6 +179,55 @@ fn a_braced_inline_call_does_not_swallow_the_rest_of_the_line() {
 }
 
 #[test]
+fn quoted_keys_and_values_survive_a_round_trip() {
+    // 无展开器的行内调用会按**解析出来的**参数重新回显，所以这一条同时验证了
+    // 解析与回显两侧：含空格的键和值都必须重新套上引号。
+    assert_eq!(
+        render("{{a \"k 1\"=\"v 1\" plain}}"),
+        "<p class=\"nm-p\">{{a \"k 1\"=\"v 1\" plain=true}}</p>"
+    );
+}
+
+#[test]
+fn a_quoted_link_target_may_contain_spaces() {
+    assert_eq!(
+        render("[[文本 => \"a b\"]]"),
+        "<p class=\"nm-p\"><a class=\"nm-link\" href=\"a b\">文本</a></p>"
+    );
+}
+
+#[test]
+fn a_quoted_link_target_may_contain_an_arrow() {
+    // 引号保护目标里的箭头
+    assert_eq!(
+        render("[[a => \"b => c\"]]"),
+        "<p class=\"nm-p\"><a class=\"nm-link\" href=\"b =&gt; c\">a</a></p>"
+    );
+}
+
+#[test]
+fn a_lone_backtick_is_written_with_two_backticks() {
+    // `` ` `` → 内容是单个反引号
+    assert_eq!(
+        render("`` ` ``"),
+        "<p class=\"nm-p\"><code class=\"nm-code-inline\">`</code></p>"
+    );
+    // 要包住两个反引号就得用三个
+    assert_eq!(
+        render("``` `` ```"),
+        "<p class=\"nm-p\"><code class=\"nm-code-inline\">``</code></p>"
+    );
+}
+
+#[test]
+fn an_escaped_quote_stays_a_straight_quote() {
+    // 转义的意义就是原样，所以它不该被智能标点接手
+    assert_eq!(render("\\\"原文\\\""), "<p class=\"nm-p\">\"原文\"</p>");
+    // 没转义就照常变成弯引号
+    assert_eq!(render("\"原文\""), "<p class=\"nm-p\">“原文”</p>");
+}
+
+#[test]
 fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
     assert_eq!(render("硬\\\n换行"), "<p class=\"nm-p\">硬<br>换行</p>");
     assert_eq!(render("软\n换行"), "<p class=\"nm-p\">软\n换行</p>");

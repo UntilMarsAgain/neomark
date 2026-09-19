@@ -215,9 +215,9 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
     header.push_str(name);
     for (key, value) in params.iter() {
         header.push(' ');
-        header.push_str(key);
+        push_header_token(key, &mut header);
         header.push('=');
-        push_param_value(value, &mut header);
+        push_header_token(value, &mut header);
     }
     escape_text(&header, out);
 
@@ -231,24 +231,34 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
     out.push_str("}}");
 }
 
-/// 把参数值写回调用语法：含空白或引号时补双引号并转义。
-fn push_param_value(value: &str, out: &mut String) {
-    if value.is_empty() || value.chars().any(|c| c.is_whitespace() || c == '"') {
-        out.push('"');
-        for ch in value.chars() {
-            match ch {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\t' => out.push_str("\\t"),
-                '\r' => out.push_str("\\r"),
-                _ => out.push(ch),
-            }
-        }
-        out.push('"');
-    } else {
-        out.push_str(value);
+/// 把一个键或值写回调用语法。
+///
+/// 含空白、引号、反斜杠、`:`、`=`（或者为空）时套上双引号并转义——这几个字符
+/// 都会影响重新解析的结果，所以必须包住，**回显出来的东西要能再解析回同样的
+/// 键值**。
+fn push_header_token(token: &str, out: &mut String) {
+    let needs_quotes = token.is_empty()
+        || token
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | ':' | '='));
+
+    if !needs_quotes {
+        out.push_str(token);
+        return;
     }
+
+    out.push('"');
+    for ch in token.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
 }
 
 /// 模板实例的**默认**映射。
@@ -447,6 +457,30 @@ mod tests {
         ast.push_block(id);
 
         assert_eq!(render(&ast), ":nope:");
+    }
+
+    #[test]
+    fn echoed_headers_reparse_to_the_same_params() {
+        let original: Params = [
+            ("k 1".to_string(), "v 1".to_string()),
+            ("k:2".to_string(), "v:2".to_string()),
+            ("k=3".to_string(), "v 4".to_string()),
+            ("plain".to_string(), "true".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut ast = Ast::new();
+        let id = ast.new_inline_call("a", original.clone(), Span::new(1, 1, 0, 0));
+        ast.push_block(id);
+
+        let echoed = render(&ast);
+        let inner = echoed
+            .strip_prefix("{{")
+            .and_then(|rest| rest.strip_suffix("}}"))
+            .expect("无展开器的行内调用回显成 {{…}}");
+
+        assert_eq!(crate::parse::parse_call_header(inner).params, original);
     }
 
     #[test]
