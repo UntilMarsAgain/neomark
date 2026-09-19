@@ -87,6 +87,20 @@ body {
   font-style: italic;
 }
 
+/* Emoji：渲染器包了一层 span，所以可以按需调整尺寸与间距；
+ * 将来换成手搓 SVG 时，这个类名就是挂载点。 */
+.nm-emoji {
+  line-height: 1;
+  font-style: normal;
+}
+
+/* ── 块级 ─────────────────────────────────────────────────
+ * 模板实例：目前渲染器给的是通用 div + data-*，这里先只保证不挤压排版。
+ */
+.nm-instance {
+  margin: 0 0 1.1em;
+}
+
 /* 报错 / 未展开提示框：显眼但不吓人。 */
 .nm-error {
   margin: 1.2em 0;

@@ -12,8 +12,10 @@
 //!
 //! # 展开器拿的是节点 id
 //!
+//! 展开器产出的是**语义节点**，不是 HTML——标签与类名是渲染器的事。
+//!
 //! ```
-//! use neomark::{Ast, Attr, Context, Handler, NodeId};
+//! use neomark::{Ast, Context, Handler, NodeId};
 //!
 //! struct Notice;
 //!
@@ -24,12 +26,13 @@
 //!         ast: &mut Ast,
 //!         _ctx: &mut Context<'_>,
 //!     ) -> Vec<NodeId> {
-//!         let div = ast.new_element("div", vec![Attr::new("class", "notice")]);
+//!         let params = ast.call(node).unwrap().params.clone();
+//!         let instance = ast.new_instance("notice", params);
 //!         // 移交块体：一次 append 就把原有子节点搬过来了
 //!         for child in ast.children(node).collect::<Vec<_>>() {
-//!             ast.append(div, child);
+//!             ast.append(instance, child);
 //!         }
-//!         vec![div]
+//!         vec![instance]
 //!     }
 //! }
 //! ```

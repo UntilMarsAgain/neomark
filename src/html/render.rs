@@ -1,13 +1,24 @@
-//! HTML 渲染器：遍历块树，写出 HTML 片段。
+//! HTML 渲染器：把**语义**节点映射成 HTML。
+//!
+//! 这是整个 crate 里唯一知道 HTML 的地方。AST 说「这是强调」，这里决定
+//! 用 `<em class="nm-em">`；AST 说「这是一个 `rocket` 短码」，这里决定查
+//! [`emoji`] 表并包一层 `<span>`。所以换标签、换类名、把 emoji 换成手搓
+//! SVG，都只动这个模块。
+//!
+//! 输出规则：
+//!
+//! * 只写 DOM。转义在这里做，AST 里存的始终是**未转义**文本。
+//! * 顶层块之间插入换行以便阅读；**元素内部一个空白都不插**，否则
+//!   `pre` 的内容会被破坏。
+//! * [`NodeKind::Error`] 渲染成信息提示框。
+//! * [`NodeKind::Unparsed`] 本不该出现（说明没跑调度器），画成提示框而不是
+//!   静默丢内容。
 
-use crate::ast::{Ast, Attr, Block, ErrorNode, NodeId, NodeKind};
+use crate::ast::{Ast, Block, ErrorNode, NodeId, NodeKind, Params};
+
+use super::emoji;
 
 /// 把整棵树渲染成 HTML 片段（**不含** `<html>` / `<body>` 外壳）。
-///
-/// * 只写 DOM。转义在这里做，块树里存的始终是**未转义**文本。
-/// * 顶层块之间插入换行以便阅读；**元素内部一个空白都不插**，否则
-///   `pre` 的内容会被破坏。
-/// * `Error` 节点渲染成信息提示框。
 pub fn render(ast: &Ast) -> String {
     let mut out = String::new();
     let roots: Vec<NodeId> = ast.children(ast.document()).collect();
@@ -29,7 +40,24 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
                 write_node(ast, child, out);
             }
         }
-        Some(NodeKind::Element { tag, attrs }) => write_element(ast, id, tag, attrs, out),
+
+        // ── 块级 ──
+        Some(NodeKind::Paragraph) => container(ast, id, "p", "nm-p", out),
+        Some(NodeKind::Instance { name, params }) => write_instance(ast, id, name, params, out),
+
+        // ── 行内 ──
+        Some(NodeKind::Emphasis) => container(ast, id, "em", "nm-em", out),
+        Some(NodeKind::Strong) => container(ast, id, "strong", "nm-strong", out),
+        Some(NodeKind::Strikethrough) => container(ast, id, "del", "nm-del", out),
+        Some(NodeKind::Subscript) => container(ast, id, "sub", "nm-sub", out),
+        Some(NodeKind::Superscript) => container(ast, id, "sup", "nm-sup", out),
+        Some(NodeKind::Mark) => container(ast, id, "mark", "nm-mark", out),
+        Some(NodeKind::Code) => container(ast, id, "code", "nm-code-inline", out),
+        Some(NodeKind::Math) => write_math(ast, id, out),
+        Some(NodeKind::Emoji(alias)) => write_emoji(alias, out),
+        Some(NodeKind::LineBreak) => out.push_str("<br>"),
+
+        // ── 内容 ──
         Some(NodeKind::Text(text)) => escape_text(text, out),
         Some(NodeKind::Error(error)) => write_error(error, out),
         // 未解析的块本不该出现在这里——说明渲染之前没有跑调度器。
@@ -39,15 +67,13 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
     }
 }
 
-fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], out: &mut String) {
+/// 一个带 `nm-` 类名的普通元素。
+fn container(ast: &Ast, id: NodeId, tag: &str, class: &str, out: &mut String) {
     out.push('<');
     out.push_str(tag);
-    write_attrs(attrs, out);
-    out.push('>');
-
-    if is_void(tag) {
-        return;
-    }
+    out.push_str(" class=\"");
+    out.push_str(class);
+    out.push_str("\">");
 
     for child in ast.children(id).collect::<Vec<_>>() {
         write_node(ast, child, out);
@@ -58,41 +84,70 @@ fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], out: &mut Str
     out.push('>');
 }
 
-fn write_attrs(attrs: &[Attr], out: &mut String) {
-    for attr in attrs {
-        if !is_valid_attr_name(&attr.name) {
-            // 属性名目前来自展开器而非用户输入，但一旦引入「参数 → 属性」的
-            // 通用映射，它就会变成注入面，所以这里先从语法上挡掉。
-            continue;
+/// 行内数学。
+///
+/// AST 里存的是原样内容；这里归一成 KaTeX / MathJax 默认认识的 `\(...\)`，
+/// 这样 `$$` 包裹内层 `$` 的写法不会泄漏成行间公式。要换分隔符改这里。
+fn write_math(ast: &Ast, id: NodeId, out: &mut String) {
+    out.push_str("<span class=\"nm-math\">\\(");
+    for child in ast.children(id).collect::<Vec<_>>() {
+        write_node(ast, child, out);
+    }
+    out.push_str("\\)</span>");
+}
+
+/// Emoji 短码：查表决定长什么样。
+///
+/// 表里没有的名字**原样回显**，不吞掉作者的输入。想换成手搓 SVG 或加上
+/// `title`，改 [`emoji`] 表与这个函数即可。
+fn write_emoji(alias: &str, out: &mut String) {
+    match emoji::value(alias) {
+        Some(value) => {
+            out.push_str("<span class=\"nm-emoji\" data-alias=\"");
+            escape_attr(alias, out);
+            out.push_str("\">");
+            escape_text(value, out);
+            out.push_str("</span>");
         }
-        out.push(' ');
-        out.push_str(&attr.name);
-        if let Some(value) = &attr.value {
-            out.push_str("=\"");
-            escape_attr(value, out);
-            out.push('"');
+        None => {
+            out.push(':');
+            escape_text(alias, out);
+            out.push(':');
         }
     }
 }
 
-/// 属性名只允许 `[A-Za-z0-9_:.-]`。
-fn is_valid_attr_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
-}
+/// 模板实例的**默认**映射。
+///
+/// 目前还没有任何调用块展开器，所以先给一个通用形态：带类名的 `div`，
+/// 参数以 `data-*` 带出来，方便 CSS/JS 取用。将来 `::notice` 之类的映射
+/// 落地时，在这里按 `name` 分派即可。
+///
+/// 参数键来自调用头部（**用户输入**），所以先做名字合法性校验；`data-`
+/// 前缀也顺带把 `onclick` 这类名字中和成无害的属性。
+fn write_instance(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut String) {
+    out.push_str("<div class=\"nm-instance nm-instance-");
+    escape_attr(name, out);
+    out.push_str("\" data-name=\"");
+    escape_attr(name, out);
+    out.push('"');
 
-/// HTML5 的 void 元素：没有闭合标签。
-const VOID_ELEMENTS: [&str; 14] = [
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
-    "track", "wbr",
-];
+    for (key, value) in params.iter() {
+        if !is_valid_attr_name(key) {
+            continue;
+        }
+        out.push_str(" data-");
+        out.push_str(key);
+        out.push_str("=\"");
+        escape_attr(value, out);
+        out.push('"');
+    }
 
-fn is_void(tag: &str) -> bool {
-    VOID_ELEMENTS
-        .iter()
-        .any(|void| void.eq_ignore_ascii_case(tag))
+    out.push('>');
+    for child in ast.children(id).collect::<Vec<_>>() {
+        write_node(ast, child, out);
+    }
+    out.push_str("</div>");
 }
 
 fn write_error(error: &ErrorNode, out: &mut String) {
@@ -106,8 +161,8 @@ fn write_error(error: &ErrorNode, out: &mut String) {
 
 fn write_unparsed(block: &Block, out: &mut String) {
     let message = match block {
-        Block::Call(call) => format!("未展开的调用块 ::{}", call.name),
-        Block::Natural(_) => "未展开的自然块".to_string(),
+        Block::Call(call) => format!("未解析的调用块 ::{}", call.name),
+        Block::Natural(_) => "未解析的自然块".to_string(),
     };
     write_error_box("unparsed", &message, None, out);
 }
@@ -129,6 +184,16 @@ fn write_error_box(modifier: &str, message: &str, content: Option<&str>, out: &m
     }
 
     out.push_str("</div>");
+}
+
+/// 属性名只允许 `[A-Za-z0-9_:.-]`。
+///
+/// 参数键来自调用头部，是用户输入，不能直接拼进标签。
+fn is_valid_attr_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
 }
 
 /// 转义正文：`&` `<` `>`。
@@ -160,7 +225,7 @@ fn escape_attr(text: &str, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Attr, ErrorKind, ErrorNode, Span};
+    use crate::ast::{ErrorKind, Params, Span};
     use crate::dispatch::{Context, Dispatcher, Registry};
     use crate::handlers;
     use crate::parse::parse;
@@ -198,57 +263,9 @@ mod tests {
 
         assert!(html.starts_with("<div class=\"nm-error nm-error-no-handler\""));
         assert!(html.contains("<p class=\"nm-error-message\">未注册的调用块 ::nope</p>"));
-        // 原文原样回显，并且是转义过的。
         assert!(
             html.contains("<pre class=\"nm-error-content\"><code>::nope a=1:\n  body</code></pre>")
         );
-    }
-
-    #[test]
-    fn void_elements_have_no_closing_tag() {
-        let mut ast = Ast::new();
-        let image = ast.new_element(
-            "img",
-            vec![Attr::new("src", "a.png"), Attr::boolean("lazy")],
-        );
-        ast.push_block(image);
-
-        assert_eq!(render(&ast), "<img src=\"a.png\" lazy>");
-    }
-
-    #[test]
-    fn attribute_values_are_escaped() {
-        let mut ast = Ast::new();
-        let div = ast.new_element("div", vec![Attr::new("title", "a\"b&c")]);
-        ast.push_block(div);
-
-        assert_eq!(render(&ast), "<div title=\"a&quot;b&amp;c\"></div>");
-    }
-
-    #[test]
-    fn invalid_attribute_names_are_dropped() {
-        let mut ast = Ast::new();
-        let div = ast.new_element(
-            "div",
-            vec![
-                Attr::new("class", "ok"),
-                Attr::new("bad name", "x"),
-                Attr::new("bad\"name", "y"),
-            ],
-        );
-        ast.push_block(div);
-
-        assert_eq!(render(&ast), "<div class=\"ok\"></div>");
-    }
-
-    #[test]
-    fn an_unparsed_node_is_drawn_rather_than_dropped() {
-        // 忘了跑调度器时不该静默丢内容。
-        let ast = parse("::code:\n  x");
-        let html = render(&ast);
-
-        assert!(html.contains("nm-error-unparsed"));
-        assert!(html.contains("未展开的调用块 ::code"));
     }
 
     #[test]
@@ -265,5 +282,82 @@ mod tests {
         let html = render(&ast);
         assert!(html.starts_with("<div class=\"nm-error nm-error-expand-failed\""));
         assert!(html.contains("<p class=\"nm-error-message\">炸了</p>"));
+    }
+
+    #[test]
+    fn an_unparsed_node_is_drawn_rather_than_dropped() {
+        // 忘了跑调度器时不该静默丢内容。
+        let ast = parse("::code:\n  x");
+        let html = render(&ast);
+
+        assert!(html.contains("nm-error-unparsed"));
+        assert!(html.contains("未解析的调用块 ::code"));
+    }
+
+    #[test]
+    fn emoji_aliases_are_looked_up_here() {
+        let mut ast = Ast::new();
+        let id = ast.new_emoji("rocket");
+        ast.push_block(id);
+
+        assert_eq!(
+            render(&ast),
+            "<span class=\"nm-emoji\" data-alias=\"rocket\">🚀</span>"
+        );
+    }
+
+    #[test]
+    fn unknown_emoji_aliases_are_echoed_verbatim() {
+        let mut ast = Ast::new();
+        let id = ast.new_emoji("nope");
+        ast.push_block(id);
+
+        assert_eq!(render(&ast), ":nope:");
+    }
+
+    #[test]
+    fn a_line_break_is_a_void_br() {
+        let mut ast = Ast::new();
+        let id = ast.new_line_break();
+        ast.push_block(id);
+
+        assert_eq!(render(&ast), "<br>");
+    }
+
+    #[test]
+    fn instances_get_a_generic_mapping_with_params_as_data_attributes() {
+        let params: Params = [("type".to_string(), "warning".to_string())]
+            .into_iter()
+            .collect();
+
+        let mut ast = Ast::new();
+        let instance = ast.new_instance("notice", params);
+        let text = ast.new_text("小心");
+        ast.append(instance, text);
+        ast.push_block(instance);
+
+        assert_eq!(
+            render(&ast),
+            "<div class=\"nm-instance nm-instance-notice\" data-name=\"notice\" data-type=\"warning\">小心</div>"
+        );
+    }
+
+    #[test]
+    fn param_keys_that_are_not_valid_attribute_names_are_dropped() {
+        let params: Params = [
+            ("type".to_string(), "warning".to_string()),
+            ("bad name".to_string(), "x".to_string()),
+            ("bad\"key".to_string(), "y".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut ast = Ast::new();
+        let id = ast.new_instance("notice", params);
+        ast.push_block(id);
+
+        let html = render(&ast);
+        assert!(html.contains(" data-type=\"warning\""));
+        assert!(!html.contains("bad"));
     }
 }

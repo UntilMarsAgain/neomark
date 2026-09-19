@@ -68,8 +68,8 @@ mod parse;
 pub use indextree;
 
 pub use ast::{
-    Ast, Attr, Block, CallBlock, ErrorKind, ErrorNode, KindTag, NaturalBlock, NodeId, NodeKind,
-    Params, Span,
+    Ast, Block, CallBlock, ErrorKind, ErrorNode, KindTag, NaturalBlock, NodeId, NodeKind, Params,
+    Span,
 };
 pub use dispatch::{Context, Dispatcher, Fallback, Handler, Registry};
 pub use parse::{CallHeader, parse, parse_call_header};

@@ -126,7 +126,20 @@ fn math_is_verbatim_so_its_markers_are_not_reinterpreted() {
 fn entities_emoji_escapes_and_font_punctuation() {
     assert_eq!(
         render("&amp; &hellip; :rocket: \\*不斜\\* ..."),
-        "<p class=\"nm-p\">&amp; … 🚀 *不斜* …</p>"
+        "<p class=\"nm-p\">&amp; … <span class=\"nm-emoji\" data-alias=\"rocket\">🚀</span> *不斜* …</p>"
+    );
+}
+
+#[test]
+fn emoji_lookup_happens_in_the_renderer_not_the_parser() {
+    // 解析层只带走名字：渲染器认识就查表，不认识就原样回显。
+    assert_eq!(
+        render(":smile: 和 :nope:"),
+        concat!(
+            "<p class=\"nm-p\">",
+            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span> 和 :nope:",
+            "</p>"
+        )
     );
 }
 

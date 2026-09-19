@@ -3,9 +3,12 @@
 //! 这一步把所有「绑定更紧」的构造先吃掉——转义、硬换行、代码跨度、数学、
 //! 实体、emoji——剩下的普通字符累积成文本，而 `*` `~` `^` `=` 的游程留到
 //! [`super::delim`] 里配对。这样代码跨度和数学的内部天然不可能触发强调。
+//!
+//! 注意这里**不做任何渲染决定**：代码跨度只标成 `Code`、数学只标成 `Math`、
+//! 短码只记名字，长什么样是 [`crate::html`] 的事。
 
 use super::{Piece, emoji, entities, smart};
-use crate::ast::Attr;
+use crate::ast::NodeKind;
 
 /// 会成为分隔符的字符。
 fn is_delimiter(c: char) -> bool {
@@ -28,7 +31,7 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
             '\\' => match chars.get(i + 1).copied() {
                 Some('\n') => {
                     flush(&mut out, &mut literal, &mut smart);
-                    out.push(line_break());
+                    out.push(Piece::LineBreak);
                     i += 2;
                 }
                 Some(next) if next.is_ascii_punctuation() => {
@@ -48,9 +51,8 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
                 match find_closer(&chars, after_open, '`', count) {
                     Some(close) => {
                         flush(&mut out, &mut literal, &mut smart);
-                        out.push(Piece::Element {
-                            tag: "code",
-                            attrs: vec![Attr::new("class", "nm-code-inline")],
+                        out.push(Piece::Node {
+                            kind: NodeKind::Code,
                             children: vec![Piece::Text(span_text(&chars[after_open..close]))],
                         });
                         i = close + count;
@@ -68,13 +70,11 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
                 match find_closer(&chars, after_open, '$', count) {
                     Some(close) => {
                         flush(&mut out, &mut literal, &mut smart);
-                        let content = span_text(&chars[after_open..close]);
-                        out.push(Piece::Element {
-                            tag: "span",
-                            attrs: vec![Attr::new("class", "nm-math")],
-                            // 归一成 KaTeX 默认认的 `\(...\)`，这样 $$ 包裹
-                            // 内层 $ 的写法不会泄漏到输出里变成行间公式。
-                            children: vec![Piece::Text(format!("\\({content}\\)"))],
+                        // 原样存内容。要不要包成 `\(...\)`、用什么标签，
+                        // 都是渲染器的决定。
+                        out.push(Piece::Node {
+                            kind: NodeKind::Math,
+                            children: vec![Piece::Text(span_text(&chars[after_open..close]))],
                         });
                         i = close + count;
                     }
@@ -97,8 +97,10 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
             },
 
             ':' => match emoji::parse(&chars[i..]) {
-                Some((value, used)) => {
-                    literal.push_str(&value);
+                Some((name, used)) => {
+                    // 短码单独成型：只带走名字，认不认识由渲染器决定。
+                    flush(&mut out, &mut literal, &mut smart);
+                    out.push(Piece::Emoji(name));
                     i += used;
                 }
                 None => {
@@ -136,14 +138,6 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
 
     flush(&mut out, &mut literal, &mut smart);
     out
-}
-
-fn line_break() -> Piece {
-    Piece::Element {
-        tag: "br",
-        attrs: Vec::new(),
-        children: Vec::new(),
-    }
 }
 
 /// 把累积的普通文本收成一个片段，顺便做智能标点。
@@ -227,20 +221,18 @@ fn flanking(prev: Option<char>, next: Option<char>) -> (bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::test_util::kind_name;
 
     fn texts(pieces: &[Piece]) -> Vec<String> {
         pieces
             .iter()
             .map(|piece| match piece {
                 Piece::Text(text) => format!("T({text})"),
-                Piece::Element { tag, children, .. } => {
-                    let inner = texts(children).join("");
-                    if *tag == "br" {
-                        format!("<{tag}>")
-                    } else {
-                        format!("<{tag}>{inner}</{tag}>")
-                    }
+                Piece::Node { kind, children } => {
+                    format!("[{} {}]", kind_name(kind), texts(children).join(""))
                 }
+                Piece::Emoji(name) => format!("E({name})"),
+                Piece::LineBreak => "<br>".to_string(),
                 Piece::Delim { ch, count, .. } => format!("D({ch}{count})"),
             })
             .collect()
@@ -266,29 +258,36 @@ mod tests {
 
     #[test]
     fn code_spans_bind_tightest() {
-        assert_eq!(show("`*x*`"), "<code>T(*x*)</code>");
+        assert_eq!(show("`*x*`"), "[code T(*x*)]");
         // 更多的反引号可以包裹内部的反引号
-        assert_eq!(show("``a`b``"), "<code>T(a`b)</code>");
+        assert_eq!(show("``a`b``"), "[code T(a`b)]");
         // 长度不同不闭合，原样落回
         assert_eq!(show("``a`"), "T(``a`)");
         // 首尾各一个空格要剥掉
-        assert_eq!(show("` a `"), "<code>T(a)</code>");
-        assert_eq!(show("`  `"), "<code>T(  )</code>");
+        assert_eq!(show("` a `"), "[code T(a)]");
+        assert_eq!(show("`  `"), "[code T(  )]");
     }
 
     #[test]
-    fn math_wraps_like_backticks() {
-        assert_eq!(show("$x^2$"), "<span>T(\\(x^2\\))</span>");
+    fn math_is_marked_as_math_with_raw_content() {
+        assert_eq!(show("$x^2$"), "[math T(x^2)]");
         // $$ 可以包裹内部的 $
-        assert_eq!(show("$$a$b$$"), "<span>T(\\(a$b\\))</span>");
+        assert_eq!(show("$$a$b$$"), "[math T(a$b)]");
         assert_eq!(show("$x"), "T($x)");
     }
 
     #[test]
-    fn entities_and_emoji_do_not_leak_into_code() {
-        assert_eq!(show("&amp; :smile:"), "T(& 😄)");
-        assert_eq!(show("`&amp;`"), "<code>T(&amp;)</code>");
-        assert_eq!(show("`:smile:`"), "<code>T(:smile:)</code>");
+    fn emoji_becomes_a_name_only_piece() {
+        // 值不在这里解析——只带走名字。
+        assert_eq!(show("&amp; :smile:"), "T(& )E(smile)");
+        assert_eq!(show(":nope:"), "E(nope)");
+    }
+
+    #[test]
+    fn entities_emoji_and_markers_do_not_leak_into_code() {
+        assert_eq!(show("`&amp;`"), "[code T(&amp;)]");
+        assert_eq!(show("`:smile:`"), "[code T(:smile:)]");
+        assert_eq!(show("`*x*`"), "[code T(*x*)]");
     }
 
     #[test]
@@ -305,6 +304,6 @@ mod tests {
     #[test]
     fn smart_punctuation_runs_on_plain_text_only() {
         assert_eq!(show("等一下..."), "T(等一下…)");
-        assert_eq!(show("`...`"), "<code>T(...)</code>");
+        assert_eq!(show("`...`"), "[code T(...)]");
     }
 }

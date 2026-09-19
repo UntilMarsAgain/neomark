@@ -5,7 +5,7 @@
 //! 只保留 `*`），所以也省掉了下划线特有的词内限制。
 
 use super::Piece;
-use crate::ast::Attr;
+use crate::ast::NodeKind;
 
 /// 一个分隔符游程的快照。
 #[derive(Debug, Clone, Copy)]
@@ -61,7 +61,7 @@ pub(crate) fn resolve(mut nodes: Vec<Piece>) -> Vec<Piece> {
         };
         let open_info = delim_at(&nodes, open_index).expect("刚刚确认过是分隔符");
 
-        let Some((tag, used)) = matching(open_info.ch, open_info.count, closer_info.count) else {
+        let Some((kind, used)) = matching(open_info.ch, open_info.count, closer_info.count) else {
             closer += 1;
             continue;
         };
@@ -73,11 +73,7 @@ pub(crate) fn resolve(mut nodes: Vec<Piece>) -> Vec<Piece> {
         if open_info.count > used {
             replacement.push(open_info.shortened_to(open_info.count - used));
         }
-        replacement.push(Piece::Element {
-            tag,
-            attrs: attrs_for(tag),
-            children,
-        });
+        replacement.push(Piece::Node { kind, children });
         if closer_info.count > used {
             replacement.push(closer_info.shortened_to(closer_info.count - used));
         }
@@ -119,35 +115,30 @@ fn allowed(opener: Delim, closer: Delim) -> bool {
         || (opener.count.is_multiple_of(3) && closer.count.is_multiple_of(3))
 }
 
-/// 决定配成什么、以及消耗几个分隔符。
-fn matching(ch: char, open: usize, close: usize) -> Option<(&'static str, usize)> {
+/// 决定配成什么**语义**、以及消耗几个分隔符。这里不提任何 HTML。
+fn matching(ch: char, open: usize, close: usize) -> Option<(NodeKind, usize)> {
     match ch {
         '*' => Some(if open >= 2 && close >= 2 {
-            ("strong", 2)
+            (NodeKind::Strong, 2)
         } else {
-            ("em", 1)
+            (NodeKind::Emphasis, 1)
         }),
         // `~~` 是删除线，单个 `~` 是下标。
         '~' => Some(if open >= 2 && close >= 2 {
-            ("del", 2)
+            (NodeKind::Strikethrough, 2)
         } else {
-            ("sub", 1)
+            (NodeKind::Subscript, 1)
         }),
-        '^' => Some(("sup", 1)),
-        '=' if open >= 2 && close >= 2 => Some(("mark", 2)),
+        '^' => Some((NodeKind::Superscript, 1)),
+        '=' if open >= 2 && close >= 2 => Some((NodeKind::Mark, 2)),
         _ => None,
     }
-}
-
-/// 每个元素都带一个 `nm-` 类名，这样生成的 HTML 可以整体被样式作用域覆盖，
-/// 不会波及宿主页面里同样叫 `em` / `strong` 的元素。
-fn attrs_for(tag: &str) -> Vec<Attr> {
-    vec![Attr::new("class", format!("nm-{tag}"))]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::test_util::kind_name;
     use crate::inline::scan;
 
     /// 只跑到配对为止的树形打印。
@@ -157,9 +148,11 @@ mod tests {
                 .iter()
                 .map(|piece| match piece {
                     Piece::Text(text) => text.clone(),
-                    Piece::Element { tag, children, .. } => {
-                        format!("<{tag}>{}</{tag}>", render(children))
+                    Piece::Node { kind, children } => {
+                        format!("[{} {}]", kind_name(kind), render(children))
                     }
+                    Piece::Emoji(name) => format!("E({name})"),
+                    Piece::LineBreak => "<br>".to_string(),
                     Piece::Delim { ch, count, .. } => format!("{ch}{count}"),
                 })
                 .collect()
@@ -169,15 +162,15 @@ mod tests {
 
     #[test]
     fn emphasis_and_strong() {
-        assert_eq!(show("*a*"), "<em>a</em>");
-        assert_eq!(show("**a**"), "<strong>a</strong>");
-        assert_eq!(show("***a***"), "<em><strong>a</strong></em>");
-        assert_eq!(show("**a *b* c**"), "<strong>a <em>b</em> c</strong>");
+        assert_eq!(show("*a*"), "[emphasis a]");
+        assert_eq!(show("**a**"), "[strong a]");
+        assert_eq!(show("***a***"), "[emphasis [strong a]]");
+        assert_eq!(show("**a *b* c**"), "[strong a [emphasis b] c]");
     }
 
     #[test]
     fn intraword_asterisks_work_which_is_why_underscores_were_dropped() {
-        assert_eq!(show("a*b*c"), "a<em>b</em>c");
+        assert_eq!(show("a*b*c"), "a[emphasis b]c");
     }
 
     #[test]
@@ -194,10 +187,10 @@ mod tests {
 
     #[test]
     fn strikethrough_subscript_superscript_and_highlight() {
-        assert_eq!(show("~~a~~"), "<del>a</del>");
-        assert_eq!(show("~a~"), "<sub>a</sub>");
-        assert_eq!(show("2^10^"), "2<sup>10</sup>");
-        assert_eq!(show("==a=="), "<mark>a</mark>");
+        assert_eq!(show("~~a~~"), "[strikethrough a]");
+        assert_eq!(show("~a~"), "[subscript a]");
+        assert_eq!(show("2^10^"), "2[superscript 10]");
+        assert_eq!(show("==a=="), "[mark a]");
     }
 
     #[test]

@@ -2,14 +2,17 @@
 //!
 //! 块级结构（`<p>`）在这里决定，**行内结构**由 [`crate::inline`] 决定。
 
-use crate::ast::{Ast, Attr, NodeId};
+use crate::ast::{Ast, NodeId};
 use crate::dispatch::{Context, Handler};
 use crate::inline;
 
-/// 自然块 → `<p class="nm-p">…</p>`，块体走行内层。
+/// 自然块 → **段落**节点，块体走行内层。
 ///
 /// 多行文本按原样交给行内层：其中的裸换行是软换行（HTML 会折叠成空格），
-/// 行尾反斜杠是硬换行（`<br>`）。
+/// 行尾反斜杠是硬换行。
+///
+/// 这里只说「这是一个段落」，至于输出 `<p class="nm-p">` 还是别的，是
+/// [`crate::html`] 的决定。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ParagraphHandler;
 
@@ -19,7 +22,7 @@ impl Handler for ParagraphHandler {
             return Vec::new();
         };
 
-        let paragraph = ast.new_element("p", vec![Attr::new("class", "nm-p")]);
+        let paragraph = ast.new_paragraph();
         for child in inline::parse(ast, &text) {
             ast.append(paragraph, child);
         }

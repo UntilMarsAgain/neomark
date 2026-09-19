@@ -96,27 +96,27 @@ impl Dispatcher {
 mod tests {
     use super::*;
     use crate::ast::test_util::sexpr;
-    use crate::ast::{Attr, ErrorKind, ErrorNode, Span};
+    use crate::ast::{ErrorKind, ErrorNode, Span};
     use crate::parse::parse;
 
-    /// 只关心调用块：把原有子节点**重新挂载**到新元素下，于是它们会被继续展开。
+    /// 只关心调用块：把调用**换成一个模板实例**，并把原有子节点重新挂载过去。
+    ///
+    /// 注意它不碰任何 HTML——产出什么标签、什么类名是渲染器的事。
     struct NoticeHandler;
 
     impl Handler for NoticeHandler {
         fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
-            let params = ast.call(node).unwrap().params.clone();
-
-            let mut attrs = vec![Attr::new("class", "notice")];
-            if let Some(kind) = params.get("type") {
-                attrs.push(Attr::new("class", format!("notice-{kind}")));
-            }
-            let div = ast.new_element("div", attrs);
+            let (name, params) = {
+                let call = ast.call(node).unwrap();
+                (call.name.clone(), call.params.clone())
+            };
+            let instance = ast.new_instance(name, params);
 
             // 移交块体：一次 append 就把子节点搬过来了。
             for child in ast.children(node).collect::<Vec<_>>() {
-                ast.append(div, child);
+                ast.append(instance, child);
             }
-            vec![div]
+            vec![instance]
         }
     }
 
@@ -132,7 +132,7 @@ mod tests {
         ) -> Vec<NodeId> {
             let text = ast.natural(node).unwrap().text.clone();
 
-            let paragraph = ast.new_element("p", Vec::new());
+            let paragraph = ast.new_paragraph();
             let text = ast.new_text(text);
             ast.append(paragraph, text);
             vec![paragraph]
@@ -140,19 +140,23 @@ mod tests {
     }
 
     /// 只取原文，**不搬运**原子节点：内层永远不会被展开。
-    struct CodeHandler;
+    struct VerbatimHandler;
 
-    impl Handler for CodeHandler {
+    impl Handler for VerbatimHandler {
         fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
-            let raw = ast.call(node).unwrap().raw_body.clone();
+            let (name, params, raw) = {
+                let call = ast.call(node).unwrap();
+                (
+                    call.name.clone(),
+                    call.params.clone(),
+                    call.raw_body.clone(),
+                )
+            };
 
-            let code = ast.new_element("code", Vec::new());
+            let instance = ast.new_instance(name, params);
             let text = ast.new_text(raw);
-            ast.append(code, text);
-
-            let pre = ast.new_element("pre", Vec::new());
-            ast.append(pre, code);
-            vec![pre]
+            ast.append(instance, text);
+            vec![instance]
         }
     }
 
@@ -204,7 +208,7 @@ mod tests {
 
         let ast = run("正文\n", registry);
 
-        assert_eq!(sexpr(&ast), r#"(element p text("正文"))"#);
+        assert_eq!(sexpr(&ast), r#"(paragraph text("正文"))"#);
     }
 
     #[test]
@@ -245,7 +249,7 @@ mod tests {
 
         assert_eq!(
             sexpr(&ast),
-            r#"(element p text("正文")) (element div class=notice class=notice-warning (element p text("小心")))"#
+            r#"(paragraph text("正文")) (instance notice type=warning (paragraph text("小心")))"#
         );
     }
 
@@ -256,7 +260,7 @@ mod tests {
 
         let ast = run("::nope:\n", registry);
 
-        assert_eq!(sexpr(&ast), "element div class=notice");
+        assert_eq!(sexpr(&ast), "instance nope");
     }
 
     #[test]
@@ -269,7 +273,7 @@ mod tests {
 
         assert_eq!(
             sexpr(&ast),
-            r#"(element div class=notice class=notice-warning (element div class=notice (element p text("内层"))))"#
+            r#"(instance notice type=warning (instance notice (paragraph text("内层"))))"#
         );
     }
 
@@ -279,7 +283,7 @@ mod tests {
         // 既不该被展开，也不该被当成未知块报错。
         let mut registry = Registry::new();
         registry.register("notice", NoticeHandler);
-        registry.register("code", CodeHandler);
+        registry.register("code", VerbatimHandler);
         registry.register_natural(ParagraphHandler);
 
         let ast = run(
@@ -289,7 +293,7 @@ mod tests {
 
         assert_eq!(
             sexpr(&ast),
-            r#"(element pre (element code text("::notice type=warning:\n  小心")))"#
+            r#"(instance code lang=neomark text("::notice type=warning:\n  小心"))"#
         );
     }
 

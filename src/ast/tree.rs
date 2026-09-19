@@ -1,53 +1,83 @@
 //! 一棵保存在 `indextree::Arena` 里的块树。
 //!
-//! 与手写 `Vec<节点>` 的关系：**孩子不再存在节点自己身上**，而是由 arena 的
-//! 父子边表示。所以 [`NodeKind`] 里没有任何 `children` 字段，`Call` 的块体、
-//! `Element` 的孩子都是 arena 边。
+//! # 这个 AST 里没有 HTML
 //!
-//! # 为什么有一个文档根
+//! [`NodeKind`] 只承载**语义**：这是段落、这是强调、这是一个 `notice` 模板实例。
+//! 标签名、类名、属性、void 元素……全部是 [`crate::html`] 的事。所以这里
+//! 没有 `Element`、没有 `Attr`，也没有任何 HTML 字符串。
 //!
-//! `Arena::roots()` 是按**槽位顺序**（创建顺序）遍历的，而不是文档顺序；
-//! 一旦展开器在中间新建节点，森林根的顺序就会错。所以这里用一个
-//! [`NodeKind::Document`] 根把所有块串成一棵真正的树，顺序由 arena 的兄弟
-//! 链表保证，同时调度器替换节点时也永远有父节点可用（不必特判根位置）。
+//! 好处是解析与渲染真正解耦：改 `<em>` 的类名、把 emoji 换成手搓 SVG、
+//! 给 `notice` 换一个标签，都只动渲染器。
+//!
+//! # 孩子在哪里
+//!
+//! 孩子不在节点身上，而由 arena 的父子边表示。`Unparsed` 的块体、
+//! 段落的行内内容、强调包住的内容，都是 arena 边。
 
 use indextree::{Arena, NodeId};
 
 use super::block::{Block, CallBlock, NaturalBlock};
 use super::error::ErrorNode;
+use super::params::Params;
 
-/// 节点载荷。
+/// 节点载荷：**语义**种类，不含任何 HTML。
 ///
-/// 除文档根外只有一根轴：**展开了没有**。[`NodeKind::Unparsed`] 是展开的
-/// 输入（自然块或调用块，语法分类在 [`Block`] 里），其余都是展开的产物。
-/// 语法层将来增加新的块种类时，这里与渲染器都不用改。
+/// 除文档根外只有两根轴：**解析了没有**，以及**它是什么意思**。
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
     /// 文档根：整棵树的唯一根。不参与展开，遍历从它的子节点开始。
     Document,
     /// **未解析**的块；具体是哪一种语法块由 [`Block`] 说明。
     Unparsed(Block),
-    /// 已展开的 HTML 元素；元素的孩子就是它的子节点。
-    Element {
-        /// 标签名，例如 `div`。
-        tag: String,
-        /// 属性。
-        attrs: Vec<Attr>,
+
+    // ── 块级语义 ──────────────────────────────────────────
+    /// 段落：孩子是行内节点。
+    Paragraph,
+    /// 调用块展开出的**模板实例**。
+    ///
+    /// 只记名字与参数——它长什么样完全由渲染器决定。这与 [`NodeKind::Emoji`]
+    /// 是同一种做法：AST 负责「这是什么」，渲染器负责「长什么样」。
+    Instance {
+        /// 模板名，例如 `notice`。
+        name: String,
+        /// 调用时给的参数。
+        params: Params,
     },
-    /// 已展开的纯文本（**未转义**；转义是渲染器的事）。
+
+    // ── 行内语义 ──────────────────────────────────────────
+    /// 强调。
+    Emphasis,
+    /// 加粗。
+    Strong,
+    /// 删除线。
+    Strikethrough,
+    /// 下标。
+    Subscript,
+    /// 上标。
+    Superscript,
+    /// 高亮。
+    Mark,
+    /// 行内代码；孩子是一个**原样**文本。
+    Code,
+    /// 行内数学；孩子是一个**原样**文本。
+    Math,
+    /// Emoji 短码；只记名字，怎么显示由渲染器决定。
+    Emoji(String),
+    /// 硬换行。
+    LineBreak,
+
+    // ── 内容 ─────────────────────────────────────────────
+    /// 纯文本（**未转义**；转义是渲染器的事）。
     Text(String),
     /// 报错节点：展开器无法工作时的**最终回退**，是叶子。
     Error(ErrorNode),
 }
 
-/// 「这个节点该走哪条路」的标签，**不是**载荷形状的镜像。
+/// 「这个节点该怎么处理」的标签，**不是**载荷形状的镜像。
 ///
-/// 它是 `Copy` 的，用于在不持有 `&Ast` 的情况下决定去向——拿 `&NodeKind`
-/// 的同时又需要 `&mut Ast` 会被借用检查拒绝，而标签不会。
-///
-/// 因此这里刻意**摊平**：`NodeKind::Unparsed(Block)` 一个变体，对应
-/// [`KindTag::Natural`] / [`KindTag::Call`] 两个标签，因为调度器必须知道
-/// 该按名字查表还是走自然块槽位。
+/// 它刻意保持很小：调度器只需要知道「有没有解析」「按名字查还是走自然块
+/// 槽位」，其余全是已经展开的语义节点。`Copy` 是为了能在**不持有 `&Ast`**
+/// 的情况下做判断——拿 `&NodeKind` 的同时又需要 `&mut Ast` 会被借用检查拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KindTag {
     /// 文档根。
@@ -56,24 +86,18 @@ pub enum KindTag {
     Natural,
     /// 未解析的调用块：按名字查找。
     Call,
-    /// 已展开的元素。
-    Element,
-    /// 已展开的文本。
-    Text,
-    /// 报错节点。
-    Error,
+    /// 已经展开的语义节点。
+    Expanded,
 }
 
 impl NodeKind {
-    /// 种类标签。
+    /// 「该怎么处理」的标签。
     pub const fn tag(&self) -> KindTag {
         match self {
             NodeKind::Document => KindTag::Document,
             NodeKind::Unparsed(Block::Natural(_)) => KindTag::Natural,
             NodeKind::Unparsed(Block::Call(_)) => KindTag::Call,
-            NodeKind::Element { .. } => KindTag::Element,
-            NodeKind::Text(_) => KindTag::Text,
-            NodeKind::Error(_) => KindTag::Error,
+            _ => KindTag::Expanded,
         }
     }
 
@@ -126,17 +150,17 @@ impl Ast {
 
     // ── 读取 ───────────────────────────────────────────────
 
-    /// 节点的载荷。
+    /// 节点的语义载荷。
     pub fn kind(&self, id: NodeId) -> Option<&NodeKind> {
         self.arena.get_data(id)
     }
 
-    /// 节点的载荷（可变）。
+    /// 节点的语义载荷（可变）。
     pub fn kind_mut(&mut self, id: NodeId) -> Option<&mut NodeKind> {
         self.arena.get_data_mut(id)
     }
 
-    /// 节点的种类标签。
+    /// 「该怎么处理」的标签。
     pub fn tag(&self, id: NodeId) -> Option<KindTag> {
         self.arena.get_data(id).map(NodeKind::tag)
     }
@@ -170,18 +194,26 @@ impl Ast {
         }
     }
 
-    /// 元素的标签与属性。
-    pub fn element(&self, id: NodeId) -> Option<(&str, &[Attr])> {
-        match self.arena.get_data(id)? {
-            NodeKind::Element { tag, attrs } => Some((tag, attrs)),
-            _ => None,
-        }
-    }
-
     /// 纯文本。
     pub fn text(&self, id: NodeId) -> Option<&str> {
         match self.arena.get_data(id)? {
             NodeKind::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Emoji 短码名。
+    pub fn emoji(&self, id: NodeId) -> Option<&str> {
+        match self.arena.get_data(id)? {
+            NodeKind::Emoji(alias) => Some(alias),
+            _ => None,
+        }
+    }
+
+    /// 模板实例的名字与参数。
+    pub fn instance(&self, id: NodeId) -> Option<(&str, &Params)> {
+        match self.arena.get_data(id)? {
+            NodeKind::Instance { name, params } => Some((name, params)),
             _ => None,
         }
     }
@@ -196,22 +228,37 @@ impl Ast {
 
     // ── 建立 ───────────────────────────────────────────────
 
-    /// 新建一个任意载荷的节点（**游离**状态，尚未挂进树）。
+    /// 新建一个任意语义载荷的节点（**游离**状态，尚未挂进树）。
     pub fn new_node(&mut self, kind: NodeKind) -> NodeId {
         self.arena.new_node(kind)
-    }
-
-    /// 新建一个元素节点。
-    pub fn new_element(&mut self, tag: impl Into<String>, attrs: Vec<Attr>) -> NodeId {
-        self.new_node(NodeKind::Element {
-            tag: tag.into(),
-            attrs,
-        })
     }
 
     /// 新建一个文本节点。
     pub fn new_text(&mut self, text: impl Into<String>) -> NodeId {
         self.new_node(NodeKind::Text(text.into()))
+    }
+
+    /// 新建一个段落节点。
+    pub fn new_paragraph(&mut self) -> NodeId {
+        self.new_node(NodeKind::Paragraph)
+    }
+
+    /// 新建一个模板实例节点。
+    pub fn new_instance(&mut self, name: impl Into<String>, params: Params) -> NodeId {
+        self.new_node(NodeKind::Instance {
+            name: name.into(),
+            params,
+        })
+    }
+
+    /// 新建一个 Emoji 节点。
+    pub fn new_emoji(&mut self, alias: impl Into<String>) -> NodeId {
+        self.new_node(NodeKind::Emoji(alias.into()))
+    }
+
+    /// 新建一个硬换行节点。
+    pub fn new_line_break(&mut self) -> NodeId {
+        self.new_node(NodeKind::LineBreak)
     }
 
     /// 新建一个报错节点。
@@ -252,37 +299,5 @@ impl Ast {
     /// 把一个块挂到文档根下。
     pub fn push_block(&mut self, id: NodeId) {
         self.append(self.document, id);
-    }
-}
-
-/// 元素属性。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Attr {
-    /// 属性名。
-    pub name: String,
-    /// 属性值；`None` 表示**布尔属性**（`lazy` 而不是 `lazy="true"`）。
-    pub value: Option<String>,
-}
-
-impl Attr {
-    /// 普通属性。
-    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            value: Some(value.into()),
-        }
-    }
-
-    /// 布尔属性。
-    pub fn boolean(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            value: None,
-        }
-    }
-
-    /// 是否是布尔属性。
-    pub const fn is_boolean(&self) -> bool {
-        self.value.is_none()
     }
 }
