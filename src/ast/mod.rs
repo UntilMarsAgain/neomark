@@ -19,10 +19,13 @@
 //!
 //! 孩子关系完全由 arena 的边表示，[`NodeKind`] 里没有任何 `children` 字段。
 //!
-//! # 这里没有 HTML
+//! # 默认语义，`Element` 是逃生口
 //!
-//! 标签名、类名、属性、void 元素都是 [`crate::html`] 的事。想让 emoji 输出
-//! 手搓 SVG、想给 `notice` 换个标签，改渲染器即可，解析层一行不动。
+//! 标签名、类名、void 元素都是 [`crate::html`] 的事。想让 emoji 输出手搓
+//! SVG、想给 `notice` 换个标签，改渲染器即可，解析层一行不动。
+//!
+//! 唯一的例外是 [`NodeKind::Element`]：给那些无法用语义节点表达的调用块
+//! 展开器（尤其是外部传进来的插件）留的通用节点。
 
 mod block;
 mod error;
@@ -38,4 +41,4 @@ pub use error::{ErrorKind, ErrorNode};
 pub use indextree::NodeId;
 pub use params::Params;
 pub use span::Span;
-pub use tree::{Ast, KindTag, NodeKind};
+pub use tree::{Ast, Attr, KindTag, NodeKind};

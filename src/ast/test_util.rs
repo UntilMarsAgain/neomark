@@ -36,6 +36,16 @@ fn head(ast: &Ast, id: NodeId) -> String {
             }
             out
         }
+        Some(NodeKind::Element { tag, attrs }) => {
+            let mut out = format!("element {tag}");
+            for attr in attrs {
+                match &attr.value {
+                    Some(value) => out.push_str(&format!(" {}={value}", attr.name)),
+                    None => out.push_str(&format!(" {}!", attr.name)),
+                }
+            }
+            out
+        }
         Some(kind) => kind_name(kind).to_string(),
         None => "<gone>".to_string(),
     }
@@ -61,6 +71,7 @@ pub(crate) fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Unparsed(_) => "unparsed",
         NodeKind::Paragraph => "paragraph",
         NodeKind::Instance { .. } => "instance",
+        NodeKind::Element { .. } => "element",
         NodeKind::Emphasis => "emphasis",
         NodeKind::Strong => "strong",
         NodeKind::Strikethrough => "strikethrough",

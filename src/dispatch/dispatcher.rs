@@ -96,7 +96,7 @@ impl Dispatcher {
 mod tests {
     use super::*;
     use crate::ast::test_util::sexpr;
-    use crate::ast::{ErrorKind, ErrorNode, Span};
+    use crate::ast::{Attr, ErrorKind, ErrorNode, Span};
     use crate::parse::parse;
 
     /// 只关心调用块：把调用**换成一个模板实例**，并把原有子节点重新挂载过去。
@@ -117,6 +117,22 @@ mod tests {
                 ast.append(instance, child);
             }
             vec![instance]
+        }
+    }
+
+    /// 逃生口：展开器自己写 HTML 元素，而不是用语义节点。
+    ///
+    /// 外部插件常见这种写法——它不认识 neomark 的语义节点，只想输出自己
+    /// 那套结构。渲染器会原样输出。
+    struct RawElementHandler;
+
+    impl Handler for RawElementHandler {
+        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+            let aside = ast.new_element("aside", vec![Attr::new("class", "tip")]);
+            for child in ast.children(node).collect::<Vec<_>>() {
+                ast.append(aside, child);
+            }
+            vec![aside]
         }
     }
 
@@ -305,6 +321,21 @@ mod tests {
         let ast = run("::twice:\n  hi\n", registry);
 
         assert_eq!(sexpr(&ast), r#"text("[twice]") text("hi")"#);
+    }
+
+    #[test]
+    fn a_handler_may_emit_raw_elements_instead_of_semantic_nodes() {
+        // 逃生口：外部展开器可以自己写 HTML 元素，语义节点不是唯一选项。
+        let mut registry = Registry::new();
+        registry.register("tip", RawElementHandler);
+        registry.register_natural(ParagraphHandler);
+
+        let ast = run("::tip:\n  正文\n", registry);
+
+        assert_eq!(
+            sexpr(&ast),
+            r#"(element aside class=tip (paragraph text("正文")))"#
+        );
     }
 
     #[test]

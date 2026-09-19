@@ -1,13 +1,16 @@
 //! 一棵保存在 `indextree::Arena` 里的块树。
 //!
-//! # 这个 AST 里没有 HTML
+//! # 默认是语义，`Element` 是逃生口
 //!
-//! [`NodeKind`] 只承载**语义**：这是段落、这是强调、这是一个 `notice` 模板实例。
-//! 标签名、类名、属性、void 元素……全部是 [`crate::html`] 的事。所以这里
-//! 没有 `Element`、没有 `Attr`，也没有任何 HTML 字符串。
+//! [`NodeKind`] 的**默认**表达方式是语义：这是段落、这是强调、这是一个
+//! `notice` 模板实例。标签名、类名、void 元素全部是 [`crate::html`] 的事，
+//! 所以改 `<em>` 的类名、把 emoji 换成手搓 SVG、给 `notice` 换个标签，
+//! 都只动渲染器。
 //!
-//! 好处是解析与渲染真正解耦：改 `<em>` 的类名、把 emoji 换成手搓 SVG、
-//! 给 `notice` 换一个标签，都只动渲染器。
+//! 但调用块展开器——**尤其是外部传进来的那些**——不一定能把自己塞进这套
+//! 标准语义里。所以保留 [`NodeKind::Element`]：一个带标签与属性的通用节点，
+//! 渲染器按 HTML 元素原样输出。它是**逃生口**，不是默认写法；能用语义节点
+//! 表达的就该用语义节点。
 //!
 //! # 孩子在哪里
 //!
@@ -65,6 +68,22 @@ pub enum NodeKind {
     Emoji(String),
     /// 硬换行。
     LineBreak,
+
+    // ── 逃生口 ───────────────────────────────────────────
+    /// 通用 HTML 元素：标签 + 属性，孩子是它的子节点。
+    ///
+    /// **逃生口，不是默认写法。** 给那些无法用上面的语义节点表达的调用块
+    /// 展开器用——外部传进来的插件尤其如此。渲染器把它当 HTML 元素原样
+    /// 输出，所以往这里写的东西，等于绕过了 `crate::html` 的映射。
+    ///
+    /// 能用 [`NodeKind::Paragraph`]、[`NodeKind::Emphasis`]、
+    /// [`NodeKind::Instance`] 表达的，就不要用这个。
+    Element {
+        /// 标签名，例如 `img`、`pre`、`circle`。
+        tag: String,
+        /// 属性。
+        attrs: Vec<Attr>,
+    },
 
     // ── 内容 ─────────────────────────────────────────────
     /// 纯文本（**未转义**；转义是渲染器的事）。
@@ -218,6 +237,14 @@ impl Ast {
         }
     }
 
+    /// 通用元素的标签与属性。
+    pub fn element(&self, id: NodeId) -> Option<(&str, &[Attr])> {
+        match self.arena.get_data(id)? {
+            NodeKind::Element { tag, attrs } => Some((tag, attrs)),
+            _ => None,
+        }
+    }
+
     /// 报错节点。
     pub fn error(&self, id: NodeId) -> Option<&ErrorNode> {
         match self.arena.get_data(id)? {
@@ -248,6 +275,14 @@ impl Ast {
         self.new_node(NodeKind::Instance {
             name: name.into(),
             params,
+        })
+    }
+
+    /// 新建一个通用元素节点（**逃生口**，见 [`NodeKind::Element`]）。
+    pub fn new_element(&mut self, tag: impl Into<String>, attrs: Vec<Attr>) -> NodeId {
+        self.new_node(NodeKind::Element {
+            tag: tag.into(),
+            attrs,
         })
     }
 
@@ -299,5 +334,40 @@ impl Ast {
     /// 把一个块挂到文档根下。
     pub fn push_block(&mut self, id: NodeId) {
         self.append(self.document, id);
+    }
+}
+
+/// 通用元素的属性。
+///
+/// 只在 [`NodeKind::Element`] 这个逃生口里出现——上面的语义节点不携带属性，
+/// 它们长什么样是 [`crate::html`] 的事。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attr {
+    /// 属性名。
+    pub name: String,
+    /// 属性值；`None` 表示**布尔属性**（`lazy` 而不是 `lazy="true"`）。
+    pub value: Option<String>,
+}
+
+impl Attr {
+    /// 普通属性。
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: Some(value.into()),
+        }
+    }
+
+    /// 布尔属性。
+    pub fn boolean(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: None,
+        }
+    }
+
+    /// 是否是布尔属性。
+    pub const fn is_boolean(&self) -> bool {
+        self.value.is_none()
     }
 }

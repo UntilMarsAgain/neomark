@@ -1,9 +1,11 @@
 //! HTML 渲染器：把**语义**节点映射成 HTML。
 //!
-//! 这是整个 crate 里唯一知道 HTML 的地方。AST 说「这是强调」，这里决定
-//! 用 `<em class="nm-em">`；AST 说「这是一个 `rocket` 短码」，这里决定查
-//! [`emoji`] 表并包一层 `<span>`。所以换标签、换类名、把 emoji 换成手搓
-//! SVG，都只动这个模块。
+//! AST 说「这是强调」，这里决定用 `<em class="nm-em">`；AST 说「这是一个
+//! `rocket` 短码」，这里决定查 [`emoji`] 表并包一层 `<span>`。所以换标签、
+//! 换类名、把 emoji 换成手搓 SVG，都只动这个模块。
+//!
+//! 唯一会绕过这张映射表的是 [`NodeKind::Element`]——调用块展开器（尤其是
+//! 外部的）自己写好的 HTML 元素，这里按原样输出。
 //!
 //! 输出规则：
 //!
@@ -14,7 +16,7 @@
 //! * [`NodeKind::Unparsed`] 本不该出现（说明没跑调度器），画成提示框而不是
 //!   静默丢内容。
 
-use crate::ast::{Ast, Block, ErrorNode, NodeId, NodeKind, Params};
+use crate::ast::{Ast, Attr, Block, ErrorNode, NodeId, NodeKind, Params};
 
 use super::emoji;
 
@@ -57,6 +59,9 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
         Some(NodeKind::Emoji(alias)) => write_emoji(alias, out),
         Some(NodeKind::LineBreak) => out.push_str("<br>"),
 
+        // ── 逃生口 ──
+        Some(NodeKind::Element { tag, attrs }) => write_element(ast, id, tag, attrs, out),
+
         // ── 内容 ──
         Some(NodeKind::Text(text)) => escape_text(text, out),
         Some(NodeKind::Error(error)) => write_error(error, out),
@@ -82,6 +87,62 @@ fn container(ast: &Ast, id: NodeId, tag: &str, class: &str, out: &mut String) {
     out.push_str("</");
     out.push_str(tag);
     out.push('>');
+}
+
+/// 逃生口：把 AST 里已经写好的 HTML 元素原样输出。
+///
+/// 标签名先做合法性校验——它不是用户输入，但展开器写错了也会产出坏 HTML。
+/// 校验不过时**只输出孩子**，这样至少不丢内容。
+fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], out: &mut String) {
+    if !is_valid_attr_name(tag) {
+        for child in ast.children(id).collect::<Vec<_>>() {
+            write_node(ast, child, out);
+        }
+        return;
+    }
+
+    out.push('<');
+    out.push_str(tag);
+    write_attrs(attrs, out);
+    out.push('>');
+
+    if is_void(tag) {
+        return;
+    }
+
+    for child in ast.children(id).collect::<Vec<_>>() {
+        write_node(ast, child, out);
+    }
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+}
+
+fn write_attrs(attrs: &[Attr], out: &mut String) {
+    for attr in attrs {
+        if !is_valid_attr_name(&attr.name) {
+            continue;
+        }
+        out.push(' ');
+        out.push_str(&attr.name);
+        if let Some(value) = &attr.value {
+            out.push_str("=\"");
+            escape_attr(value, out);
+            out.push('"');
+        }
+    }
+}
+
+/// HTML5 的 void 元素：没有闭合标签。
+const VOID_ELEMENTS: [&str; 14] = [
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
+];
+
+fn is_void(tag: &str) -> bool {
+    VOID_ELEMENTS
+        .iter()
+        .any(|void| void.eq_ignore_ascii_case(tag))
 }
 
 /// 行内数学。
@@ -359,5 +420,57 @@ mod tests {
         let html = render(&ast);
         assert!(html.contains(" data-type=\"warning\""));
         assert!(!html.contains("bad"));
+    }
+
+    #[test]
+    fn raw_elements_are_emitted_verbatim() {
+        let mut ast = Ast::new();
+        let pre = ast.new_element("pre", vec![Attr::new("class", "code")]);
+        let code = ast.new_element("code", Vec::new());
+        let text = ast.new_text("fn main() {}");
+        ast.append(code, text);
+        ast.append(pre, code);
+        ast.push_block(pre);
+
+        assert_eq!(
+            render(&ast),
+            "<pre class=\"code\"><code>fn main() {}</code></pre>"
+        );
+    }
+
+    #[test]
+    fn void_raw_elements_get_no_closing_tag() {
+        let mut ast = Ast::new();
+        let id = ast.new_element(
+            "img",
+            vec![Attr::new("src", "a.png"), Attr::boolean("lazy")],
+        );
+        ast.push_block(id);
+
+        assert_eq!(render(&ast), "<img src=\"a.png\" lazy>");
+    }
+
+    #[test]
+    fn raw_element_attributes_are_escaped_and_invalid_names_dropped() {
+        let mut ast = Ast::new();
+        let id = ast.new_element(
+            "div",
+            vec![Attr::new("title", "a\"b&c"), Attr::new("bad name", "x")],
+        );
+        ast.push_block(id);
+
+        assert_eq!(render(&ast), "<div title=\"a&quot;b&amp;c\"></div>");
+    }
+
+    #[test]
+    fn a_raw_element_with_an_invalid_tag_keeps_only_its_children() {
+        // 标签名写坏了不该把内容一起丢掉。
+        let mut ast = Ast::new();
+        let id = ast.new_element("bad tag", Vec::new());
+        let text = ast.new_text("内容还在");
+        ast.append(id, text);
+        ast.push_block(id);
+
+        assert_eq!(render(&ast), "内容还在");
     }
 }
