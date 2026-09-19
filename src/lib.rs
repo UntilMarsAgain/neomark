@@ -33,7 +33,8 @@
 //! let source = "::notice type=warning:\n  小心！";
 //! let blocks = parse_blocks(source);
 //!
-//! // 没有注册展开器时，调用块会变成 Node::Error（叶子），而不是让解析失败。
+//! // 没有展开器认领的块会变成 Node::Error（叶子，带着原文内容），
+//! // 而不是让解析或展开失败。
 //! let dispatcher = Dispatcher::new(Registry::new());
 //! let mut ctx = Context::new(source);
 //! let nodes = dispatcher.run(blocks, &mut ctx);
@@ -59,5 +60,5 @@ mod parse;
 pub use ast::{
     Attr, Block, CallBlock, Element, ErrorKind, ErrorNode, NaturalBlock, Node, Params, Span,
 };
-pub use dispatch::{Context, Dispatcher, Handler, Registry};
+pub use dispatch::{Context, Dispatcher, Fallback, Handler, Registry};
 pub use parse::{CallHeader, parse_blocks, parse_call_header};
