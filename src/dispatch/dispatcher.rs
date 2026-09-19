@@ -130,7 +130,7 @@ mod tests {
     use super::*;
     use crate::ast::test_util::sexpr;
     use crate::ast::{Attr, ErrorKind, ErrorNode, Span};
-    use crate::handlers::ParagraphHandler as RealParagraphHandler;
+    use crate::handlers::NaturalExpander as RealNaturalExpander;
     use crate::parse::parse;
 
     /// 只关心调用块：把调用**换成一个模板实例**，并把原有子节点重新挂载过去。
@@ -191,6 +191,17 @@ mod tests {
                 ast.append(instance, child);
             }
             vec![instance]
+        }
+    }
+
+    /// 会把自己是谁写进输出，用来分辨命中了哪条注册。
+    struct Marker(&'static str);
+
+    impl Handler for Marker {
+        fn expand_call(&self, node: NodeId, ast: &mut Ast, _ctx: &mut Context<'_>) -> Vec<NodeId> {
+            let name = ast.call(node).unwrap().name.clone();
+            let text = ast.new_text(format!("{}:{name}", self.0));
+            vec![text]
         }
     }
 
@@ -399,7 +410,7 @@ mod tests {
     fn an_inline_call_without_an_expander_is_left_alone() {
         // 名字没有展开器 → 保持原样，连兜底报错都不加，交给渲染器解释。
         let mut registry = Registry::new();
-        registry.register_natural(RealParagraphHandler);
+        registry.register_natural(RealNaturalExpander::default());
 
         let ast = run("正文 {{nope}} 结束\n", registry);
 
@@ -412,7 +423,7 @@ mod tests {
     #[test]
     fn a_registered_inline_expander_takes_over() {
         let mut registry = Registry::new();
-        registry.register_natural(RealParagraphHandler);
+        registry.register_natural(RealNaturalExpander::default());
         registry.register("badge", BadgeHandler);
 
         let ast = run("{{badge level=3: **新**}}\n", registry);
@@ -428,7 +439,7 @@ mod tests {
     fn a_registered_handler_that_does_not_handle_inline_calls_fails_loudly() {
         // NoticeHandler 只实现了 expand_call；同名行内调用走默认实现 → 报错
         let mut registry = Registry::new();
-        registry.register_natural(RealParagraphHandler);
+        registry.register_natural(RealNaturalExpander::default());
         registry.register("notice", NoticeHandler);
 
         let ast = run("{{notice}}\n", registry);
@@ -437,6 +448,39 @@ mod tests {
             sexpr(&ast),
             r#"(paragraph error("没有展开器能处理行内调用 {notice}"))"#
         );
+    }
+
+    #[test]
+    fn exact_names_beat_patterns_and_later_patterns_beat_earlier_ones() {
+        let build = || {
+            let mut registry = Registry::new();
+            registry.register_pattern("h*", Marker("star"));
+            registry.register_pattern("h?", Marker("question"));
+            registry.register("h1", Marker("exact"));
+            registry
+        };
+
+        // 精确名最优先
+        assert_eq!(sexpr(&run("::h1:\n", build())), r#"text("exact:h1")"#);
+        // 两条通配都命中时，后注册的赢
+        assert_eq!(sexpr(&run("::h2:\n", build())), r#"text("question:h2")"#);
+        // 只有前一条通配命中
+        assert_eq!(sexpr(&run("::hello:\n", build())), r#"text("star:hello")"#);
+        // 都不命中 → 兜底报错
+        assert_eq!(
+            sexpr(&run("::nope:\n", build())),
+            r#"error("未注册的调用块 ::nope")"#
+        );
+    }
+
+    #[test]
+    fn a_pattern_registered_twice_keeps_only_the_last_handler() {
+        let mut registry = Registry::new();
+        registry.register_pattern("h?", Marker("first"));
+        registry.register_pattern("h?", Marker("second"));
+
+        assert_eq!(registry.patterns().count(), 1);
+        assert_eq!(sexpr(&run("::h3:\n", registry)), r#"text("second:h3")"#);
     }
 
     #[test]

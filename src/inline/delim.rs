@@ -137,6 +137,7 @@ fn matching(ch: char, open: usize, close: usize) -> Option<(NodeKind, usize)> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Options;
     use super::*;
     use crate::ast::test_util::kind_name;
     use crate::inline::scan;
@@ -158,7 +159,7 @@ mod tests {
                 })
                 .collect()
         }
-        render(&resolve(scan::scan(text)))
+        render(&resolve(scan::scan(text, Options::default())))
     }
 
     #[test]

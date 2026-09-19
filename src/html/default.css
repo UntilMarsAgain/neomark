@@ -102,6 +102,30 @@ body {
   text-underline-offset: 0.2em;
 }
 
+/* 标题（::h1 ~ ::h6）。 */
+.nm-h1,
+.nm-h2,
+.nm-h3,
+.nm-h4,
+.nm-h5,
+.nm-h6 {
+  line-height: 1.25;
+  margin: 1.4em 0 0.6em;
+  font-weight: 600;
+}
+
+.nm-h1 { font-size: 1.9em; }
+.nm-h2 { font-size: 1.55em; }
+.nm-h3 { font-size: 1.3em; }
+.nm-h4 { font-size: 1.12em; }
+.nm-h5 { font-size: 1em; }
+.nm-h6 { font-size: 0.92em; color: var(--nm-muted); }
+
+/* 第一个块不该顶出一段空白。 */
+.nm-document > :first-child {
+  margin-top: 0;
+}
+
 /* ── 块级 ─────────────────────────────────────────────────
  * 模板实例：目前渲染器给的是通用 div + data-*，这里先只保证不挤压排版。
  */

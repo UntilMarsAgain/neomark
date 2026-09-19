@@ -43,6 +43,7 @@ fn head(ast: &Ast, id: NodeId) -> String {
             }
             out
         }
+        Some(NodeKind::Heading { level }) => format!("heading {level}"),
         Some(NodeKind::Link { target }) => format!("link {target}"),
         Some(NodeKind::Element { tag, attrs }) => {
             let mut out = format!("element {tag}");
@@ -78,6 +79,7 @@ pub(crate) fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Document => "document",
         NodeKind::Unparsed(_) => "unparsed",
         NodeKind::Paragraph => "paragraph",
+        NodeKind::Heading { .. } => "heading",
         NodeKind::InlineCall { .. } => "inline-call",
         NodeKind::Instance { .. } => "instance",
         NodeKind::Element { .. } => "element",

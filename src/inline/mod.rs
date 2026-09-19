@@ -51,8 +51,11 @@
 
 mod delim;
 mod entities;
+mod options;
 mod scan;
 mod smart;
+
+pub use options::Options;
 
 use crate::ast::{Ast, Block, NaturalBlock, NodeId, NodeKind, Params, Span};
 
@@ -93,9 +96,12 @@ pub(crate) enum Piece {
 /// 调用方负责把它们挂到合适的位置（例如段落下）。
 ///
 /// `span` 是这段文本在原文里的位置。行内层目前**不跟踪列偏移**，所以链接
-/// 文本被包成未解析自然块时用的是这个位置（即外层块的位置）——偏大但有效。
-pub fn parse(ast: &mut Ast, text: &str, span: Span) -> Vec<NodeId> {
-    lower(ast, delim::resolve(scan::scan(text)), span)
+/// 文本与行内调用的内容被包成未解析自然块时用的是这个位置（即外层块的位置）
+/// ——偏大但有效。
+///
+/// `options` 决定开哪几项行内语法，见 [`Options`]；全关就是原样文本。
+pub fn parse(ast: &mut Ast, text: &str, span: Span, options: Options) -> Vec<NodeId> {
+    lower(ast, delim::resolve(scan::scan(text, options)), span)
 }
 
 fn lower(ast: &mut Ast, pieces: Vec<Piece>, span: Span) -> Vec<NodeId> {
@@ -165,7 +171,12 @@ mod tests {
     fn html(text: &str) -> String {
         let mut ast = Ast::new();
         let wrapper = ast.new_paragraph();
-        for id in parse(&mut ast, text, Span::new(1, 1, 0, text.len())) {
+        for id in parse(
+            &mut ast,
+            text,
+            Span::new(1, 1, 0, text.len()),
+            Options::default(),
+        ) {
             ast.append(wrapper, id);
         }
         ast.push_block(wrapper);
@@ -327,6 +338,41 @@ mod tests {
             html("[[a => x\"y&z]]"),
             "<a class=\"nm-link\" href=\"x&quot;y&amp;z\">a</a>"
         );
+    }
+
+    #[test]
+    fn options_can_turn_everything_off() {
+        // 全关 = 原样文本：连转义都不再生效，所以 `\*` 也原样留着
+        assert!(Options::none().is_plain());
+
+        let text = "**粗** \\* 逃 [[a => b]] :smile: ...";
+        let mut ast = Ast::new();
+        let nodes = parse(&mut ast, text, Span::new(1, 1, 0, 0), Options::none());
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(ast.text(nodes[0]), Some(text));
+    }
+
+    #[test]
+    fn options_can_turn_off_one_feature_at_a_time() {
+        // 关掉链接：`[[…]]` 只是普通文本
+        let mut ast = Ast::new();
+        let options = Options {
+            links: false,
+            ..Options::default()
+        };
+        let nodes = parse(&mut ast, "[[a => b]]", Span::new(1, 1, 0, 0), options);
+        assert_eq!(nodes.len(), 1);
+        assert!(ast.link(nodes[0]).is_none());
+
+        // 关掉智能标点：`...` 不再变省略号
+        let mut ast = Ast::new();
+        let options = Options {
+            smart_punctuation: false,
+            ..Options::default()
+        };
+        let nodes = parse(&mut ast, "等等...", Span::new(1, 1, 0, 0), options);
+        assert_eq!(ast.text(nodes[0]), Some("等等..."));
     }
 
     #[test]

@@ -45,6 +45,9 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
 
         // ── 块级 ──
         Some(NodeKind::Paragraph) => container(ast, id, "p", "nm-p", out),
+        Some(NodeKind::Heading { level }) => {
+            container(ast, id, &format!("h{level}"), &format!("nm-h{level}"), out)
+        }
         Some(NodeKind::Instance { name, params }) => write_instance(ast, id, name, params, out),
 
         // ── 行内 ──

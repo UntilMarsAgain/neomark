@@ -13,13 +13,31 @@
 //! ```
 //!
 //! 解析与展开是**两个阶段**：`parse` 只做切分与识别，不解释任何块的语义；
-//! 调用块由注册的 [`Handler`] 展开成元素节点。
+//! 调用块由注册的 [`Handler`] 展开成语义节点。
+//!
+//! ## 展开器
+//!
+//! 注册表按调用名查找，支持三种注册方式：
+//!
+//! * [`Registry::register`]：精确名，优先级最高；
+//! * [`Registry::register_pattern`]：**通配模式**（`*` 任意序列、`?` 单个字符），
+//!   所以 `::h1` ~ `::h6` 用一条 `h?` 就够——后注册的模式优先；
+//! * [`Registry::register_natural`]：自然块槽位。
+//!
+//! 都没命中时用兜底展开器（默认产出报错节点）。
+//!
+//! [`NaturalExpander`] 是自然块展开器，**同时是一个可直接调用的接口**：
+//! 其他展开器或外部解析器要「把这段文本当自然块解析」时直接调它的
+//! [`block`](NaturalExpander::block) / [`inline`](NaturalExpander::inline)，
+//! 不必绕调度器——内置的 `::h1` ~ `::h6` 就是这么写的。
+//!
+//! 它持有一份行内层[配置](Options)，所以每一项行内语法都可以单独关掉。
 //!
 //! ## 模块结构
 //!
 //! * [`ast`]：块树 —— 一棵 `indextree` arena 树，是调度器与渲染器唯一依赖的稳定层；
 //! * [`dispatch`]：块的种类 → 展开器的分发与改写；
-//! * [`handlers`]：内置展开器（目前只有自然块 → `<p>`）；
+//! * [`handlers`]：内置展开器（自然块 → 段落、`::h1` ~ `::h6`）；
 //! * [`html`]：把已展开的树写成 HTML，[`html::render_page`] 产出内嵌默认 CSS 的完整页面；
 //! * `parse`：解析器实现，内部模块不对外暴露，只通过 crate 根重新导出入口。
 //!
@@ -75,4 +93,6 @@ pub use ast::{
     Params, Span,
 };
 pub use dispatch::{Context, Dispatcher, Fallback, Handler, Registry};
+pub use handlers::{Headings, NaturalExpander};
+pub use inline::Options;
 pub use parse::{CallHeader, parse, parse_call_header};

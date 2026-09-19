@@ -252,6 +252,25 @@ fn names_keys_and_values_may_all_be_quoted() {
 }
 
 #[test]
+fn headings_are_registered_through_a_wildcard_pattern() {
+    // `h?` 一条模式覆盖 h1~h6；正文走自然块展开器的**可调用接口**，
+    // 所以标题里能写行内标记，而且不会多套一层段落。
+    assert_eq!(
+        render("::h1: 一级**标题**"),
+        "<h1 class=\"nm-h1\">一级<strong class=\"nm-strong\">标题</strong></h1>"
+    );
+    assert_eq!(render("::h6: 六级"), "<h6 class=\"nm-h6\">六级</h6>");
+}
+
+#[test]
+fn a_name_that_only_looks_like_a_heading_reports_an_error() {
+    // `h?` 也会命中 `ha`，所以展开器自己要挡住——报错而不是静默丢掉。
+    let html = render("::ha: x");
+    assert!(html.contains("nm-error-expand-failed"), "{html}");
+    assert!(html.contains("标题级别只能是 h1~h6"), "{html}");
+}
+
+#[test]
 fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
     assert_eq!(render("硬\\\n换行"), "<p class=\"nm-p\">硬<br>换行</p>");
     assert_eq!(render("软\n换行"), "<p class=\"nm-p\">软\n换行</p>");

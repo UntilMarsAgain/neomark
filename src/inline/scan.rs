@@ -7,6 +7,7 @@
 //! 注意这里**不做任何渲染决定**：代码跨度只标成 `Code`、数学只标成 `Math`、
 //! 短码只记名字，长什么样是 [`crate::html`] 的事。
 
+use super::options::Options;
 use super::{Piece, entities, smart};
 use crate::ast::{NodeKind, Params};
 
@@ -15,12 +16,12 @@ fn is_delimiter(c: char) -> bool {
     matches!(c, '*' | '~' | '^' | '=')
 }
 
-pub(crate) fn scan(text: &str) -> Vec<Piece> {
+pub(crate) fn scan(text: &str, options: Options) -> Vec<Piece> {
     let chars: Vec<char> = text.chars().collect();
     let mut out: Vec<Piece> = Vec::new();
     let mut literal = String::new();
     // 引号状态要跨段保留，所以整段扫描共用一个转换器。
-    let mut smart = smart::Converter::new();
+    let mut smart = smart::Converter::new(options.smart_punctuation);
     let mut i = 0;
 
     while i < chars.len() {
@@ -28,7 +29,7 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
 
         match c {
             // 转义与硬换行
-            '\\' => match chars.get(i + 1).copied() {
+            '\\' if options.escapes => match chars.get(i + 1).copied() {
                 Some('\n') => {
                     flush(&mut out, &mut literal, &mut smart);
                     out.push(Piece::LineBreak);
@@ -59,11 +60,16 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
             // 原样落回文本）；内容里的换行归空格；首尾同时是空格且内容不全是
             // 空格时各剥一个；内部**没有任何转义**，反斜杠也是字面字符。
             '`' | '$' => {
-                let kind = if c == '`' {
-                    NodeKind::Code
+                let (kind, enabled) = if c == '`' {
+                    (NodeKind::Code, options.code_spans)
                 } else {
-                    NodeKind::Math
+                    (NodeKind::Math, options.math)
                 };
+                if !enabled {
+                    literal.push(c);
+                    i += 1;
+                    continue;
+                }
 
                 let (count, after_open) = run_len(&chars, i);
                 match find_closer(&chars, after_open, c, count) {
@@ -84,7 +90,7 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
                 }
             }
 
-            '&' => match entities::parse(&chars[i..]) {
+            '&' if options.entities => match entities::parse(&chars[i..]) {
                 Some((value, used)) => {
                     literal.push_str(&value);
                     i += used;
@@ -96,7 +102,7 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
             },
 
             // 行内调用的糖形态：`:name:`
-            ':' => match parse_bare_call(&chars, i) {
+            ':' if options.calls => match parse_bare_call(&chars, i) {
                 Some((name, used)) => {
                     flush(&mut out, &mut literal, &mut smart);
                     out.push(Piece::InlineCall {
@@ -113,24 +119,26 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
             },
 
             // 行内调用的全形：`{{name k=v: 内容}}`
-            '{' if chars.get(i + 1) == Some(&'{') => match parse_inline_call(&chars, i) {
-                Some((name, params, content, end)) => {
-                    flush(&mut out, &mut literal, &mut smart);
-                    out.push(Piece::InlineCall {
-                        name,
-                        params,
-                        content,
-                    });
-                    i = end;
+            '{' if options.calls && chars.get(i + 1) == Some(&'{') => {
+                match parse_inline_call(&chars, i) {
+                    Some((name, params, content, end)) => {
+                        flush(&mut out, &mut literal, &mut smart);
+                        out.push(Piece::InlineCall {
+                            name,
+                            params,
+                            content,
+                        });
+                        i = end;
+                    }
+                    None => {
+                        literal.push('{');
+                        i += 1;
+                    }
                 }
-                None => {
-                    literal.push('{');
-                    i += 1;
-                }
-            },
+            }
 
             // 链接：[[ Text => Target ]]
-            '[' if chars.get(i + 1) == Some(&'[') => match parse_link(&chars, i) {
+            '[' if options.links && chars.get(i + 1) == Some(&'[') => match parse_link(&chars, i) {
                 Some((target, text, end)) => {
                     flush(&mut out, &mut literal, &mut smart);
                     out.push(Piece::Link { target, text });
@@ -143,6 +151,17 @@ pub(crate) fn scan(text: &str) -> Vec<Piece> {
             },
 
             c if is_delimiter(c) => {
+                let enabled = if c == '*' {
+                    options.emphasis
+                } else {
+                    options.styles
+                };
+                if !enabled {
+                    literal.push(c);
+                    i += 1;
+                    continue;
+                }
+
                 let (count, after_run) = run_len(&chars, i);
                 // 单个 `=` 不成标记。
                 if c == '=' && count < 2 {
@@ -440,7 +459,7 @@ mod tests {
     }
 
     fn show(text: &str) -> String {
-        texts(&scan(text)).join("")
+        texts(&scan(text, Options::default())).join("")
     }
 
     #[test]

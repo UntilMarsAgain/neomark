@@ -52,6 +52,11 @@ pub enum NodeKind {
     // ── 块级语义 ──────────────────────────────────────────
     /// 段落：孩子是行内节点。
     Paragraph,
+    /// 标题（`::h1` ~ `::h6`）：孩子是行内节点。
+    Heading {
+        /// 级别，1 ~ 6。
+        level: u8,
+    },
     /// 调用块展开出的**模板实例**。
     ///
     /// 只记名字与参数——它长什么样完全由渲染器决定，和
@@ -308,6 +313,11 @@ impl Ast {
     /// 新建一个段落节点。
     pub fn new_paragraph(&mut self) -> NodeId {
         self.new_node(NodeKind::Paragraph)
+    }
+
+    /// 新建一个标题节点。
+    pub fn new_heading(&mut self, level: u8) -> NodeId {
+        self.new_node(NodeKind::Heading { level })
     }
 
     /// 新建一个模板实例节点。

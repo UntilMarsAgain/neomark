@@ -19,13 +19,15 @@ pub(crate) const fn affects(c: char) -> bool {
 
 /// 智能标点转换器。
 pub(crate) struct Converter {
+    enabled: bool,
     next_double_opens: bool,
     next_single_opens: bool,
 }
 
 impl Converter {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(enabled: bool) -> Self {
         Self {
+            enabled,
             next_double_opens: true,
             next_single_opens: true,
         }
@@ -33,6 +35,10 @@ impl Converter {
 
     /// 转换一段普通文本。
     pub(crate) fn apply(&mut self, text: &str) -> String {
+        if !self.enabled {
+            return text.to_string();
+        }
+
         let chars: Vec<char> = text.chars().collect();
         let mut out = String::with_capacity(text.len());
         let mut i = 0;
@@ -99,7 +105,7 @@ mod tests {
     use super::*;
 
     fn apply(text: &str) -> String {
-        Converter::new().apply(text)
+        Converter::new(true).apply(text)
     }
 
     #[test]
@@ -128,7 +134,7 @@ mod tests {
     #[test]
     fn quote_state_persists_across_segments() {
         // 扫描器会按分隔符把文本切段，引号状态必须跨段保留
-        let mut converter = Converter::new();
+        let mut converter = Converter::new(true);
         assert_eq!(converter.apply("他说\""), "他说“");
         assert_eq!(converter.apply("你好\""), "你好”");
     }
