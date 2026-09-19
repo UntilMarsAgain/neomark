@@ -5,7 +5,14 @@
 //! * **自然块**：由书写自然产生，空行是切分标志；
 //! * **调用块**：由 `::name 参数...` 调用模板/脚本产生，缩进界定块体。
 //!
-//! 本模块目前只负责**切分与识别**：
+//! ## 模块结构
+//!
+//! * [`ast`]：块的数据形状，是渲染器唯一依赖的稳定层；
+//! * `parse`：解析器实现，内部模块不对外暴露，只通过 crate 根重新导出入口。
+//!
+//! 依赖方向固定为 `parse → ast`、`html → ast`；`ast` 永不依赖 `parse`。
+//!
+//! ## 用法
 //!
 //! ```
 //! use neomark::parse_blocks;
@@ -23,12 +30,9 @@
 //!    末尾的连续空行不算内容。
 //! 5. 块体去掉公共缩进后递归解析，因此调用块可以嵌套。
 
-mod block;
-mod header;
-mod params;
-mod split;
+pub mod ast;
 
-pub use block::{Block, CallBlock, NaturalBlock};
-pub use header::{CallHeader, parse_call_header};
-pub use params::Params;
-pub use split::parse_blocks;
+mod parse;
+
+pub use ast::{Block, CallBlock, NaturalBlock, Params};
+pub use parse::{CallHeader, parse_blocks, parse_call_header};

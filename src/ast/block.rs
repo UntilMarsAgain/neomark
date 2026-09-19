@@ -7,7 +7,7 @@
 //!
 //! 调用块的块体会被递归解析，所以子结构仍然是 [`Block`]。
 
-use crate::params::Params;
+use super::params::Params;
 
 /// 文档中的一个块。
 #[derive(Debug, Clone, PartialEq)]

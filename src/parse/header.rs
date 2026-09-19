@@ -15,7 +15,7 @@
 //! * 行尾的 `:` 是可选终止符，会被剥离；
 //! * 解析永不失败：语义异常（空名字、引号不闭合、`=x` 之类）都按宽容策略处理。
 
-use crate::params::Params;
+use crate::ast::Params;
 
 /// 头部识别结果。
 #[derive(Debug, Clone, PartialEq, Eq)]

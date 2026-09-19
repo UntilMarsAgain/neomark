@@ -11,8 +11,9 @@
 //!   末尾的连续空行不算内容。
 //! * 块体在去掉公共缩进后被递归解析，因此调用块可以嵌套。
 
-use crate::block::{Block, CallBlock, NaturalBlock};
-use crate::header::parse_call_header;
+use crate::ast::{Block, CallBlock, NaturalBlock};
+use crate::parse::header::parse_call_header;
+use crate::parse::line::{SrcLine, scan_lines};
 
 /// 把一段 neomark 文本切分并解析成块数组。
 ///
@@ -33,77 +34,6 @@ use crate::header::parse_call_header;
 pub fn parse_blocks(input: &str) -> Vec<Block> {
     let lines = scan_lines(input);
     parse_sequence(&lines)
-}
-
-/// 扫描出的一个行：文本 + 缩进 + 是否空行。
-///
-/// `text` 可能已经被去缩进处理过，但 `indent` 始终与 `text` 的前导空格数一致。
-#[derive(Debug, Clone, Copy)]
-struct SrcLine<'a> {
-    text: &'a str,
-    indent: usize,
-    blank: bool,
-}
-
-impl<'a> SrcLine<'a> {
-    fn new(text: &'a str) -> Self {
-        Self {
-            text,
-            indent: count_indent(text),
-            blank: text.trim().is_empty(),
-        }
-    }
-
-    /// 去掉行首缩进后的内容。
-    fn content(&self) -> &'a str {
-        &self.text[self.indent..]
-    }
-
-    /// 这一行是否是调用块头部行。
-    fn is_call(&self) -> bool {
-        !self.blank && self.content().starts_with("::")
-    }
-}
-
-/// 只统计行首的 ASCII 空格；制表符不算缩进。
-fn count_indent(text: &str) -> usize {
-    text.bytes().take_while(|&b| b == b' ').count()
-}
-
-/// 按 `\n` 切行，兼容 `\r\n`，末尾换行不产生额外的空行。
-fn scan_lines(input: &str) -> Vec<SrcLine<'_>> {
-    let bytes = input.as_bytes();
-    let mut lines = Vec::new();
-    let mut start = 0;
-
-    loop {
-        match input[start..].find('\n') {
-            Some(relative) => {
-                let newline = start + relative;
-                let mut end = newline;
-                if end > start && bytes[end - 1] == b'\r' {
-                    end -= 1;
-                }
-                lines.push(SrcLine::new(&input[start..end]));
-                start = newline + 1;
-                if start >= input.len() {
-                    break;
-                }
-            }
-            None => {
-                if start < input.len() {
-                    let mut end = input.len();
-                    if end > start && bytes[end - 1] == b'\r' {
-                        end -= 1;
-                    }
-                    lines.push(SrcLine::new(&input[start..end]));
-                }
-                break;
-            }
-        }
-    }
-
-    lines
 }
 
 /// 解析一段行序列，识别并分发自然块 / 调用块。
