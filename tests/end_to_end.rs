@@ -89,3 +89,61 @@ fn the_full_page_is_self_contained() {
 fn crlf_input_compiles_the_same_as_lf() {
     assert_eq!(render("甲\r\n\r\n乙"), render("甲\n\n乙"));
 }
+
+#[test]
+fn inline_markup_is_rendered_inside_paragraphs() {
+    assert_eq!(
+        render("**粗**、*斜*、~~删~~、`码`、==亮==、2^10^、~下~。"),
+        concat!(
+            "<p class=\"nm-p\">",
+            "<strong class=\"nm-strong\">粗</strong>、",
+            "<em class=\"nm-em\">斜</em>、",
+            "<del class=\"nm-del\">删</del>、",
+            "<code class=\"nm-code-inline\">码</code>、",
+            "<mark class=\"nm-mark\">亮</mark>、",
+            "2<sup class=\"nm-sup\">10</sup>、",
+            "<sub class=\"nm-sub\">下</sub>。",
+            "</p>"
+        )
+    );
+}
+
+#[test]
+fn math_is_verbatim_so_its_markers_are_not_reinterpreted() {
+    // `^` 在公式里不该被当成上标——数学的绑定比行内标记更紧。
+    assert_eq!(
+        render("$a^b$"),
+        "<p class=\"nm-p\"><span class=\"nm-math\">\\(a^b\\)</span></p>"
+    );
+    // 代码跨度同理
+    assert_eq!(
+        render("`**a**`"),
+        "<p class=\"nm-p\"><code class=\"nm-code-inline\">**a**</code></p>"
+    );
+}
+
+#[test]
+fn entities_emoji_escapes_and_font_punctuation() {
+    assert_eq!(
+        render("&amp; &hellip; :rocket: \\*不斜\\* ..."),
+        "<p class=\"nm-p\">&amp; … 🚀 *不斜* …</p>"
+    );
+}
+
+#[test]
+fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
+    assert_eq!(render("硬\\\n换行"), "<p class=\"nm-p\">硬<br>换行</p>");
+    assert_eq!(render("软\n换行"), "<p class=\"nm-p\">软\n换行</p>");
+}
+
+#[test]
+fn a_call_block_still_swallows_its_subtree_into_one_box() {
+    // 没有 ::code 展开器时，::code 整块（连同内部嵌套的块）变成一个提示框，
+    // 内部不会再各自爆出提示框。
+    let source = "::code lang=neomark:\n  ::notice:\n    内层 **没有** 行内解析\n";
+    let html = render(source);
+
+    assert_eq!(html.matches("nm-error-no-handler").count(), 1);
+    // 提示框里是原样回显，不做行内解析
+    assert!(html.contains("内层 **没有** 行内解析"));
+}

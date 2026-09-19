@@ -60,6 +60,7 @@ pub mod ast;
 pub mod dispatch;
 pub mod handlers;
 pub mod html;
+pub mod inline;
 
 mod parse;
 
