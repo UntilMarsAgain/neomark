@@ -1,4 +1,4 @@
-//! 块切分与递归解析。
+//! 块切分与递归解析：直接建出一棵 [`Ast`]。
 //!
 //! # 切分规则
 //!
@@ -9,36 +9,44 @@
 //!   一旦缩进不再严格大于，该行就是下一个块的首行，无论末尾有没有空行。
 //! * 调用块体内部的空行不结束块：只要后面还有更深缩进的内容行，块就继续；
 //!   末尾的连续空行不算内容。
-//! * 块体在去掉公共缩进后被递归解析，因此调用块可以嵌套。
+//! * 块体在去掉公共缩进后被递归解析，因此调用块可以嵌套——块体就是该调用
+//!   节点在 arena 里的子节点。
 
-use crate::ast::{Block, CallBlock, NaturalBlock, Span};
+use crate::ast::{Ast, CallBlock, NaturalBlock, NodeId, NodeKind, Span};
 use crate::parse::header::parse_call_header;
 use crate::parse::line::{SrcLine, scan_lines};
 
-/// 把一段 neomark 文本切分并解析成块数组。
+/// 把一段 neomark 文本解析成一棵块树。
 ///
-/// 这是本模块的主入口；调用块的块体会被递归解析成子块数组。
+/// 顶层块挂在文档根（[`Ast::document`]）下。
 ///
 /// # 示例
 ///
 /// ```
-/// use neomark::{parse_blocks, Block};
+/// use neomark::{KindTag, parse};
 ///
-/// let blocks = parse_blocks("你好。\n\n::notice type=warning:\n  小心！");
+/// let ast = parse("你好。\n\n::notice type=warning:\n  小心！");
+/// let blocks: Vec<_> = ast.children(ast.document()).collect();
 ///
 /// assert_eq!(blocks.len(), 2);
-/// assert!(matches!(&blocks[0], Block::Natural(b) if b.text == "你好。"));
-/// assert!(matches!(&blocks[1], Block::Call(b) if b.name == "notice"
-///     && b.params.get("type") == Some("warning")));
+/// assert_eq!(ast.tag(blocks[0]), Some(KindTag::Natural));
+/// assert_eq!(ast.call(blocks[1]).unwrap().name, "notice");
+/// assert_eq!(ast.call(blocks[1]).unwrap().param("type"), Some("warning"));
 /// ```
-pub fn parse_blocks(input: &str) -> Vec<Block> {
+pub fn parse(input: &str) -> Ast {
+    let mut ast = Ast::new();
     let lines = scan_lines(input);
-    parse_sequence(&lines)
+
+    for id in parse_sequence(&mut ast, &lines) {
+        ast.push_block(id);
+    }
+
+    ast
 }
 
-/// 解析一段行序列，识别并分发自然块 / 调用块。
-fn parse_sequence(lines: &[SrcLine<'_>]) -> Vec<Block> {
-    let mut blocks = Vec::new();
+/// 解析一段行序列，识别并分发自然块 / 调用块，返回按文档顺序排列的节点。
+fn parse_sequence(ast: &mut Ast, lines: &[SrcLine<'_>]) -> Vec<NodeId> {
+    let mut ids = Vec::new();
     let mut index = 0;
 
     while index < lines.len() {
@@ -48,34 +56,34 @@ fn parse_sequence(lines: &[SrcLine<'_>]) -> Vec<Block> {
             continue;
         }
 
-        let (block, next) = if lines[index].is_call() {
-            parse_call(lines, index)
+        let (id, next) = if lines[index].is_call() {
+            parse_call(ast, lines, index)
         } else {
-            parse_natural(lines, index)
+            parse_natural(ast, lines, index)
         };
-        blocks.push(block);
+        ids.push(id);
         index = next;
     }
 
-    blocks
+    ids
 }
 
 /// 收集一个自然块：直到空行、调用行首或文本结束。
-fn parse_natural(lines: &[SrcLine<'_>], start: usize) -> (Block, usize) {
+fn parse_natural(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId, usize) {
     let mut end = start;
     while end < lines.len() && !lines[end].blank && !lines[end].is_call() {
         end += 1;
     }
 
-    let block = NaturalBlock {
+    let id = ast.new_node(NodeKind::Natural(NaturalBlock {
         text: join_lines(&lines[start..end]),
         span: span_of(&lines[start..end]),
-    };
-    (Block::Natural(block), end)
+    }));
+    (id, end)
 }
 
-/// 解析一个调用块：头部 + 按缩进界定的块体（递归解析）。
-fn parse_call(lines: &[SrcLine<'_>], start: usize) -> (Block, usize) {
+/// 解析一个调用块：头部 + 按缩进界定的块体（递归解析成子节点）。
+fn parse_call(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId, usize) {
     let header_line = &lines[start];
     let header_indent = header_line.indent;
     let header = parse_call_header(header_line.content());
@@ -104,26 +112,31 @@ fn parse_call(lines: &[SrcLine<'_>], start: usize) -> (Block, usize) {
         body_start += 1;
     }
 
-    // 去掉公共缩进后递归解析，实现“每次展开一层”的嵌套。
+    // 去掉公共缩进后递归解析；块体就是调用节点的子节点。
     let dedented = dedent(&lines[body_start..body_end]);
-    let body = parse_sequence(&dedented);
+    let children = parse_sequence(ast, &dedented);
     let raw_body = join_lines(&dedented);
 
     // 没有块体时 `body_end == start + 1`，这里正好落回头部行自身。
     let last = &lines[body_end - 1];
-    let block = CallBlock {
+    let span = Span::new(
+        header_line.line_no,
+        last.line_no,
+        header_line.start,
+        last.end,
+    );
+
+    let id = ast.new_node(NodeKind::Call(CallBlock {
         name: header.name,
         params: header.params,
-        body,
         raw_body,
-        span: Span::new(
-            header_line.line_no,
-            last.line_no,
-            header_line.start,
-            last.end,
-        ),
-    };
-    (Block::Call(block), cursor)
+        span,
+    }));
+    for child in children {
+        ast.append(id, child);
+    }
+
+    (id, cursor)
 }
 
 /// 一组行在原文中的位置范围。
@@ -186,182 +199,127 @@ fn join_lines(lines: &[SrcLine<'_>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn natural(text: &str) -> Block {
-        Block::Natural(NaturalBlock {
-            text: text.to_string(),
-            span: Span::new(0, 0, 0, 0),
-        })
-    }
-
-    fn call(name: &str, params: &[(&str, &str)], body: Vec<Block>) -> Block {
-        Block::Call(CallBlock {
-            name: name.to_string(),
-            params: params
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            body,
-            raw_body: String::new(),
-            span: Span::new(0, 0, 0, 0),
-        })
-    }
-
-    /// 抹平位置信息，便于只断言结构；位置由下面两个专门的测试覆盖。
-    fn norm(block: Block) -> Block {
-        match block {
-            Block::Natural(mut natural) => {
-                natural.span = Span::new(0, 0, 0, 0);
-                Block::Natural(natural)
-            }
-            Block::Call(mut call) => {
-                call.span = Span::new(0, 0, 0, 0);
-                call.raw_body.clear();
-                call.body = call.body.into_iter().map(norm).collect();
-                Block::Call(call)
-            }
-        }
-    }
-
-    fn norm_all(blocks: Vec<Block>) -> Vec<Block> {
-        blocks.into_iter().map(norm).collect()
-    }
+    use crate::ast::test_util::sexpr;
 
     #[test]
     fn empty_input_has_no_blocks() {
-        assert!(parse_blocks("").is_empty());
-        assert!(parse_blocks("\n\n   \n").is_empty());
+        assert_eq!(sexpr(&parse("")), "");
+        assert_eq!(sexpr(&parse("\n\n   \n")), "");
     }
 
     #[test]
     fn natural_blocks_split_on_blank_lines() {
-        let blocks = parse_blocks("第一段\n仍然第一段\n\n\n第二段");
+        let ast = parse("第一段\n仍然第一段\n\n\n第二段");
         assert_eq!(
-            norm_all(blocks),
-            vec![natural("第一段\n仍然第一段"), natural("第二段")]
+            sexpr(&ast),
+            r#"natural("第一段\n仍然第一段") natural("第二段")"#
         );
     }
 
     #[test]
     fn crlf_is_supported() {
-        let blocks = parse_blocks("a\r\n\r\n::x:\r\n  b\r\n");
-        assert_eq!(
-            norm_all(blocks),
-            vec![natural("a"), call("x", &[], vec![natural("b")])]
-        );
+        let ast = parse("a\r\n\r\n::x:\r\n  b\r\n");
+        assert_eq!(sexpr(&ast), r#"natural("a") (call x natural("b"))"#);
     }
 
     #[test]
     fn call_line_starts_a_block_without_a_preceding_blank_line() {
         // 规则 1：以 :: 开头的行永远开启调用块，哪怕前面没有空行。
-        let blocks = parse_blocks("正文\n::notice:\n  内容");
+        let ast = parse("正文\n::notice:\n  内容");
         assert_eq!(
-            norm_all(blocks),
-            vec![natural("正文"), call("notice", &[], vec![natural("内容")])]
+            sexpr(&ast),
+            r#"natural("正文") (call notice natural("内容"))"#
         );
     }
 
     #[test]
     fn dedent_ends_a_call_block_without_a_blank_line() {
         // 规则 3：缩进不严格大于即为下一个块的首行，末尾无需空行。
-        let blocks = parse_blocks("::a:\n  x\n下一块");
-        assert_eq!(
-            norm_all(blocks),
-            vec![call("a", &[], vec![natural("x")]), natural("下一块")]
-        );
+        let ast = parse("::a:\n  x\n下一块");
+        assert_eq!(sexpr(&ast), r#"(call a natural("x")) natural("下一块")"#);
     }
 
     #[test]
     fn blank_lines_inside_a_call_body_do_not_end_it() {
-        let blocks = parse_blocks("::a:\n  x\n\n  y\n\n结尾");
+        let ast = parse("::a:\n  x\n\n  y\n\n结尾");
         assert_eq!(
-            norm_all(blocks),
-            vec![
-                call("a", &[], vec![natural("x"), natural("y")]),
-                natural("结尾"),
-            ]
+            sexpr(&ast),
+            r#"(call a natural("x") natural("y")) natural("结尾")"#
         );
     }
 
     #[test]
     fn trailing_blank_lines_are_not_part_of_the_body() {
-        let blocks = parse_blocks("::a:\n  x\n\n\n");
-        assert_eq!(norm_all(blocks), vec![call("a", &[], vec![natural("x")])]);
+        let ast = parse("::a:\n  x\n\n\n");
+        assert_eq!(sexpr(&ast), r#"(call a natural("x"))"#);
     }
 
     #[test]
     fn call_block_without_a_body() {
-        let blocks = parse_blocks("::a:\n::b:\n");
-        assert_eq!(
-            norm_all(blocks),
-            vec![call("a", &[], vec![]), call("b", &[], vec![])]
-        );
+        let ast = parse("::a:\n::b:\n");
+        assert_eq!(sexpr(&ast), "call a call b");
     }
 
     #[test]
     fn call_blocks_nest_by_indentation() {
-        let blocks = parse_blocks("::outer:\n  ::inner:\n    deep\n  tail");
+        let ast = parse("::outer:\n  ::inner:\n    deep\n  tail");
         assert_eq!(
-            norm_all(blocks),
-            vec![call(
-                "outer",
-                &[],
-                vec![call("inner", &[], vec![natural("deep")]), natural("tail")]
-            )]
+            sexpr(&ast),
+            r#"(call outer (call inner natural("deep")) natural("tail"))"#
         );
     }
 
     #[test]
     fn indented_call_line_interrupts_a_natural_block() {
-        let blocks = parse_blocks("文字\n  ::x:\n    y\n后续");
+        let ast = parse("文字\n  ::x:\n    y\n后续");
         assert_eq!(
-            norm_all(blocks),
-            vec![
-                natural("文字"),
-                call("x", &[], vec![natural("y")]),
-                natural("后续"),
-            ]
+            sexpr(&ast),
+            r#"natural("文字") (call x natural("y")) natural("后续")"#
         );
     }
 
     #[test]
     fn body_keeps_relative_indentation() {
-        let blocks = parse_blocks("::a:\n    deep\n  shallow");
-        assert_eq!(
-            norm_all(blocks),
-            vec![call("a", &[], vec![natural("  deep\nshallow")])]
-        );
+        let ast = parse("::a:\n    deep\n  shallow");
+        assert_eq!(sexpr(&ast), r#"(call a natural("  deep\nshallow"))"#);
     }
 
     #[test]
     fn spans_and_raw_body_point_at_the_original_source() {
         let source = "::code lang=rust:\n  fn main() {}\n";
-        let blocks = parse_blocks(source);
-        let Block::Call(code) = &blocks[0] else {
-            panic!("期望一个调用块");
-        };
+        let ast = parse(source);
+        let root = ast.children(ast.document()).next().unwrap();
+        let call = ast.call(root).unwrap();
 
-        assert_eq!(code.span, Span::new(1, 2, 0, source.trim_end().len()));
-        assert_eq!(code.raw_body, "fn main() {}");
-        assert_eq!(code.span.slice(source), "::code lang=rust:\n  fn main() {}");
+        assert_eq!(call.span, Span::new(1, 2, 0, source.trim_end().len()));
+        assert_eq!(call.raw_body, "fn main() {}");
+        assert_eq!(call.span.slice(source), "::code lang=rust:\n  fn main() {}");
     }
 
     #[test]
     fn nested_block_spans_are_absolute() {
         let source = "::outer:\n  ::inner:\n    x\n";
-        let blocks = parse_blocks(source);
-        let Block::Call(outer) = &blocks[0] else {
-            panic!("期望外层调用块");
-        };
-        let Block::Call(inner) = &outer.body[0] else {
-            panic!("期望内层调用块");
-        };
+        let ast = parse(source);
+        let outer = ast.children(ast.document()).next().unwrap();
+        let inner = ast.children(outer).next().unwrap();
 
-        assert_eq!(outer.span, Span::new(1, 3, 0, 25));
-        assert_eq!(outer.span.slice(source), "::outer:\n  ::inner:\n    x");
-        assert_eq!(inner.span, Span::new(2, 3, 9, 25));
-        assert_eq!(inner.span.slice(source), "  ::inner:\n    x");
-        assert_eq!(inner.raw_body, "x");
+        assert_eq!(ast.call(outer).unwrap().span, Span::new(1, 3, 0, 25));
+        assert_eq!(
+            ast.call(outer).unwrap().span.slice(source),
+            "::outer:\n  ::inner:\n    x"
+        );
+        assert_eq!(ast.call(inner).unwrap().span, Span::new(2, 3, 9, 25));
+        assert_eq!(
+            ast.call(inner).unwrap().span.slice(source),
+            "  ::inner:\n    x"
+        );
+        assert_eq!(ast.call(inner).unwrap().raw_body, "x");
+    }
+
+    #[test]
+    fn the_tree_passes_the_arena_integrity_check() {
+        let ast = parse("正文\n\n::outer:\n  ::inner:\n    deep\n  tail\n");
+        assert!(ast.validate());
     }
 
     #[test]
@@ -382,36 +340,8 @@ mod tests {
     这里是引用内容
     可以有多行";
 
-        let blocks = parse_blocks(source);
-        assert_eq!(
-            norm_all(blocks),
-            vec![call(
-                "code",
-                &[("lang", "neomark")],
-                vec![
-                    call(
-                        "notice",
-                        &[("type", "warning")],
-                        vec![natural("这是一个通知调用块，参数 type 的值为 \"warning\"")],
-                    ),
-                    call(
-                        "notice",
-                        &[("title", "Be Careful!")],
-                        vec![natural("需要缩进表示属于调用体")],
-                    ),
-                    call(
-                        "image",
-                        &[("width", "300"), ("height", "200"), ("lazy", "true")],
-                        vec![natural("path/to/image.jpg")],
-                    ),
-                    natural("图片调用块，包含三个参数：width、height 和 lazy（等同于 lazy=true）"),
-                    call(
-                        "quote",
-                        &[("author", "张三"), ("source", "《文章标题》")],
-                        vec![natural("这里是引用内容\n可以有多行")],
-                    ),
-                ]
-            )]
-        );
+        let expected = r#"(call code lang=neomark (call notice type=warning natural("这是一个通知调用块，参数 type 的值为 \"warning\"")) (call notice title=Be Careful! natural("需要缩进表示属于调用体")) (call image width=300 height=200 lazy=true natural("path/to/image.jpg")) natural("图片调用块，包含三个参数：width、height 和 lazy（等同于 lazy=true）") (call quote author=张三 source=《文章标题》 natural("这里是引用内容\n可以有多行")))"#;
+
+        assert_eq!(sexpr(&parse(source)), expected);
     }
 }

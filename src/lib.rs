@@ -8,18 +8,17 @@
 //! ## 流水线
 //!
 //! ```text
-//! 源文本 ──parse_blocks──▶ Vec<Block> ──Dispatcher──▶ Vec<Node> ──渲染器──▶ HTML
-//!         语法层              语法树          展开/渲染树
+//! 源文本 ──parse──▶ Ast（arena 树） ──Dispatcher──▶ Ast（已展开）──▶ HTML
+//!                   一棵树同时容纳未展开与已展开节点
 //! ```
 //!
-//! 解析与展开是**两个阶段**：`parse_blocks` 只做切分与识别，不解释任何块的
-//! 语义；调用块由注册的 [`Handler`] 展开成 [`Node`]，展开过程中未展开的子树
-//! 保持语法形态。
+//! 解析与展开是**两个阶段**：`parse` 只做切分与识别，不解释任何块的语义；
+//! 调用块由注册的 [`Handler`] 展开成元素节点。
 //!
 //! ## 模块结构
 //!
-//! * [`ast`]：块与节点的数据形状，是调度器和渲染器唯一依赖的稳定层；
-//! * [`dispatch`]：调用名 → 展开器的分发与改写；
+//! * [`ast`]：块树 —— 一棵 `indextree` arena 树，是调度器与渲染器唯一依赖的稳定层；
+//! * [`dispatch`]：块的种类 → 展开器的分发与改写；
 //! * `parse`：解析器实现，内部模块不对外暴露，只通过 crate 根重新导出入口。
 //!
 //! 依赖方向固定为 `parse → ast`、`dispatch → ast`、`html → ast`；
@@ -28,18 +27,19 @@
 //! ## 用法
 //!
 //! ```
-//! use neomark::{Context, Dispatcher, Registry, parse_blocks};
+//! use neomark::{Context, Dispatcher, Registry, parse};
 //!
 //! let source = "::notice type=warning:\n  小心！";
-//! let blocks = parse_blocks(source);
+//! let mut ast = parse(source);
 //!
-//! // 没有展开器认领的块会变成 Node::Error（叶子，带着原文内容），
-//! // 而不是让解析或展开失败。
 //! let dispatcher = Dispatcher::new(Registry::new());
 //! let mut ctx = Context::new(source);
-//! let nodes = dispatcher.run(blocks, &mut ctx);
+//! dispatcher.run(&mut ast, &mut ctx);
 //!
-//! assert_eq!(nodes.len(), 1);
+//! // 没有展开器认领的块会变成 NodeKind::Error（叶子，带着原文内容），
+//! // 而不是让解析或展开失败。
+//! let root = ast.children(ast.document()).next().unwrap();
+//! assert!(ast.error(root).is_some());
 //! ```
 //!
 //! ## 切分规则
@@ -50,15 +50,19 @@
 //! 3. 缩进一旦不再严格大于，该行就是下一个块的首行，末尾无需空行。
 //! 4. 调用块体内的空行不结束块（只要后面还有更深缩进的行），
 //!    末尾的连续空行不算内容。
-//! 5. 块体去掉公共缩进后递归解析，因此调用块可以嵌套。
+//! 5. 块体去掉公共缩进后递归解析，块体就是该调用节点的子节点。
 
 pub mod ast;
 pub mod dispatch;
 
 mod parse;
 
+/// 底层树库。`Ast::arena()` 暴露的就是它的 [`indextree::Arena`]。
+pub use indextree;
+
 pub use ast::{
-    Attr, Block, CallBlock, Element, ErrorKind, ErrorNode, NaturalBlock, Node, Params, Span,
+    Ast, Attr, CallBlock, ErrorKind, ErrorNode, KindTag, NaturalBlock, NodeId, NodeKind, Params,
+    Span,
 };
 pub use dispatch::{Context, Dispatcher, Fallback, Handler, Registry};
-pub use parse::{CallHeader, parse_blocks, parse_call_header};
+pub use parse::{CallHeader, parse, parse_call_header};

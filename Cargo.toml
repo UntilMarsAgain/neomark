@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# 关掉默认的 `macros` 特性：它只为 `indextree!` 宏服务，会拖进 proc-macro2/syn/
+# strum/thiserror 一整棵依赖树；我们只用 Arena 本身。
+indextree = { version = "4.9", default-features = false, features = ["std"] }
