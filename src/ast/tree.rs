@@ -13,21 +13,20 @@
 
 use indextree::{Arena, NodeId};
 
-use super::block::{CallBlock, NaturalBlock};
+use super::block::{Block, CallBlock, NaturalBlock};
 use super::error::ErrorNode;
 
 /// 节点载荷。
 ///
-/// 前两类是**未展开**节点，后三类是**已展开**节点，它们可以同时存在于
-/// 同一棵树里；调度器负责把前者替换成后者。
+/// 除文档根外只有一根轴：**展开了没有**。[`NodeKind::Unparsed`] 是展开的
+/// 输入（自然块或调用块，语法分类在 [`Block`] 里），其余都是展开的产物。
+/// 语法层将来增加新的块种类时，这里与渲染器都不用改。
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
     /// 文档根：整棵树的唯一根。不参与展开，遍历从它的子节点开始。
     Document,
-    /// **未展开**的自然块。
-    Natural(NaturalBlock),
-    /// **未展开**的调用块；调用块的块体就是它的子节点。
-    Call(CallBlock),
+    /// **未解析**的块；具体是哪一种语法块由 [`Block`] 说明。
+    Unparsed(Block),
     /// 已展开的 HTML 元素；元素的孩子就是它的子节点。
     Element {
         /// 标签名，例如 `div`。
@@ -41,17 +40,21 @@ pub enum NodeKind {
     Error(ErrorNode),
 }
 
-/// 载荷种类标签。
+/// 「这个节点该走哪条路」的标签，**不是**载荷形状的镜像。
 ///
-/// `Copy`，用于**在不持有 `&Ast` 的情况下**判断种类——这很重要：拿
-/// `&NodeKind` 的同时又需要 `&mut Ast` 会被借用检查拒绝，而标签不会。
+/// 它是 `Copy` 的，用于在不持有 `&Ast` 的情况下决定去向——拿 `&NodeKind`
+/// 的同时又需要 `&mut Ast` 会被借用检查拒绝，而标签不会。
+///
+/// 因此这里刻意**摊平**：`NodeKind::Unparsed(Block)` 一个变体，对应
+/// [`KindTag::Natural`] / [`KindTag::Call`] 两个标签，因为调度器必须知道
+/// 该按名字查表还是走自然块槽位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KindTag {
     /// 文档根。
     Document,
-    /// 未展开的自然块。
+    /// 未解析的自然块：没有名字，走专门槽位。
     Natural,
-    /// 未展开的调用块。
+    /// 未解析的调用块：按名字查找。
     Call,
     /// 已展开的元素。
     Element,
@@ -66,17 +69,17 @@ impl NodeKind {
     pub const fn tag(&self) -> KindTag {
         match self {
             NodeKind::Document => KindTag::Document,
-            NodeKind::Natural(_) => KindTag::Natural,
-            NodeKind::Call(_) => KindTag::Call,
+            NodeKind::Unparsed(Block::Natural(_)) => KindTag::Natural,
+            NodeKind::Unparsed(Block::Call(_)) => KindTag::Call,
             NodeKind::Element { .. } => KindTag::Element,
             NodeKind::Text(_) => KindTag::Text,
             NodeKind::Error(_) => KindTag::Error,
         }
     }
 
-    /// 是否是尚未展开的块。
-    pub const fn is_unexpanded(&self) -> bool {
-        matches!(self, NodeKind::Natural(_) | NodeKind::Call(_))
+    /// 是否是尚未解析的块。
+    pub const fn is_unparsed(&self) -> bool {
+        matches!(self, NodeKind::Unparsed(_))
     }
 }
 
@@ -138,24 +141,32 @@ impl Ast {
         self.arena.get_data(id).map(NodeKind::tag)
     }
 
-    /// 节点是否是尚未展开的块。
-    pub fn is_unexpanded(&self, id: NodeId) -> bool {
-        self.arena.get_data(id).is_some_and(NodeKind::is_unexpanded)
+    /// 节点是否是尚未解析的块。
+    pub fn is_unparsed(&self, id: NodeId) -> bool {
+        self.arena.get_data(id).is_some_and(NodeKind::is_unparsed)
+    }
+
+    /// 未解析块的语法载荷。
+    pub fn block(&self, id: NodeId) -> Option<&Block> {
+        match self.arena.get_data(id)? {
+            NodeKind::Unparsed(block) => Some(block),
+            _ => None,
+        }
     }
 
     /// 自然块的载荷。
     pub fn natural(&self, id: NodeId) -> Option<&NaturalBlock> {
-        match self.arena.get_data(id)? {
-            NodeKind::Natural(natural) => Some(natural),
-            _ => None,
+        match self.block(id)? {
+            Block::Natural(natural) => Some(natural),
+            Block::Call(_) => None,
         }
     }
 
     /// 调用块的载荷。
     pub fn call(&self, id: NodeId) -> Option<&CallBlock> {
-        match self.arena.get_data(id)? {
-            NodeKind::Call(call) => Some(call),
-            _ => None,
+        match self.block(id)? {
+            Block::Call(call) => Some(call),
+            Block::Natural(_) => None,
         }
     }
 

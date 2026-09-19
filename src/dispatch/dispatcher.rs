@@ -49,7 +49,7 @@ impl Dispatcher {
 
     /// 展开一个节点，并递归处理它展开出来的节点。
     fn expand_node(&self, ast: &mut Ast, node: NodeId, ctx: &mut Context<'_>) {
-        if !ast.is_unexpanded(node) {
+        if !ast.is_unparsed(node) {
             // 已展开的节点：继续往下走。
             let children: Vec<NodeId> = ast.children(node).collect();
             for child in children {

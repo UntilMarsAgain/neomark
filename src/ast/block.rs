@@ -1,10 +1,34 @@
 //! 块的自身数据。
 //!
-//! 注意：这两类块都**只有一个块自己的信息**，没有任何孩子字段——块体与
+//! 注意：这里的块都**只有一个块自己的信息**，没有任何孩子字段——块体与
 //! 子节点由 [`crate::ast::Ast`] 的 arena 边表示。
 
 use super::params::Params;
 use super::span::Span;
+
+/// 一个**尚未解析（展开）**的块。
+///
+/// 这是语法层交给分发器的东西。渲染树只区分「展开了没有」，不区分语法
+/// 分类——所以 [`crate::ast::NodeKind`] 里只有一个 `Unparsed(Block)`，
+/// 而不为每一类语法块各开一个变体。语法层将来加第三类块时，渲染器与
+/// `NodeKind` 都不用动。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Block {
+    /// 自然块。没有名字，走专门的槽位而非按名查找。
+    Natural(NaturalBlock),
+    /// 调用块。按 `name` 查找展开器。
+    Call(CallBlock),
+}
+
+impl Block {
+    /// 块在原文中的位置。
+    pub const fn span(&self) -> Span {
+        match self {
+            Block::Natural(natural) => natural.span,
+            Block::Call(call) => call.span,
+        }
+    }
+}
 
 /// 自然块：被空行（或调用块行首）切分出来的一段普通文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +48,7 @@ impl NaturalBlock {
 
 /// 调用块：`::name 参数...:` 的头部信息。
 ///
-/// 块体不在这里——它是这个节点在 arena 里的**子节点**。
+/// 块体不在这里——它是这个块在 arena 里的**子节点**。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallBlock {
     /// 调用名，例如 `notice`。

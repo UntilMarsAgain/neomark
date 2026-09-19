@@ -12,7 +12,7 @@
 //! * 块体在去掉公共缩进后被递归解析，因此调用块可以嵌套——块体就是该调用
 //!   节点在 arena 里的子节点。
 
-use crate::ast::{Ast, CallBlock, NaturalBlock, NodeId, NodeKind, Span};
+use crate::ast::{Ast, Block, CallBlock, NaturalBlock, NodeId, NodeKind, Span};
 use crate::parse::header::parse_call_header;
 use crate::parse::line::{SrcLine, scan_lines};
 
@@ -75,10 +75,10 @@ fn parse_natural(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId,
         end += 1;
     }
 
-    let id = ast.new_node(NodeKind::Natural(NaturalBlock {
+    let id = ast.new_node(NodeKind::Unparsed(Block::Natural(NaturalBlock {
         text: join_lines(&lines[start..end]),
         span: span_of(&lines[start..end]),
-    }));
+    })));
     (id, end)
 }
 
@@ -126,12 +126,12 @@ fn parse_call(ast: &mut Ast, lines: &[SrcLine<'_>], start: usize) -> (NodeId, us
         last.end,
     );
 
-    let id = ast.new_node(NodeKind::Call(CallBlock {
+    let id = ast.new_node(NodeKind::Unparsed(Block::Call(CallBlock {
         name: header.name,
         params: header.params,
         raw_body,
         span,
-    }));
+    })));
     for child in children {
         ast.append(id, child);
     }

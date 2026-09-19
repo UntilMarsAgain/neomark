@@ -1,6 +1,6 @@
 //! 测试用的树形打印：把森林渲染成紧凑的 S 表达式，便于断言结构。
 
-use super::{Ast, NodeId, NodeKind};
+use super::{Ast, Block, NodeId, NodeKind};
 
 /// 把文档根下的森林渲染成一行 S 表达式。
 ///
@@ -27,8 +27,10 @@ fn node(ast: &Ast, id: NodeId) -> String {
 fn head(ast: &Ast, id: NodeId) -> String {
     match ast.kind(id) {
         Some(NodeKind::Document) => "document".to_string(),
-        Some(NodeKind::Natural(natural)) => format!("natural({:?})", natural.text),
-        Some(NodeKind::Call(call)) => {
+        Some(NodeKind::Unparsed(Block::Natural(natural))) => {
+            format!("natural({:?})", natural.text)
+        }
+        Some(NodeKind::Unparsed(Block::Call(call))) => {
             let mut out = format!("call {}", call.name);
             for (key, value) in call.params.iter() {
                 out.push_str(&format!(" {key}={value}"));

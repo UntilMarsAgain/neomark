@@ -27,7 +27,7 @@ mod tree;
 #[cfg(test)]
 pub(crate) mod test_util;
 
-pub use block::{CallBlock, NaturalBlock};
+pub use block::{Block, CallBlock, NaturalBlock};
 pub use error::{ErrorKind, ErrorNode};
 pub use indextree::NodeId;
 pub use params::Params;
