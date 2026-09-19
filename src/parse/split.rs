@@ -11,7 +11,7 @@
 //!   末尾的连续空行不算内容。
 //! * 块体在去掉公共缩进后被递归解析，因此调用块可以嵌套。
 
-use crate::ast::{Block, CallBlock, NaturalBlock};
+use crate::ast::{Block, CallBlock, NaturalBlock, Span};
 use crate::parse::header::parse_call_header;
 use crate::parse::line::{SrcLine, scan_lines};
 
@@ -69,6 +69,7 @@ fn parse_natural(lines: &[SrcLine<'_>], start: usize) -> (Block, usize) {
 
     let block = NaturalBlock {
         text: join_lines(&lines[start..end]),
+        span: span_of(&lines[start..end]),
     };
     (Block::Natural(block), end)
 }
@@ -106,16 +107,35 @@ fn parse_call(lines: &[SrcLine<'_>], start: usize) -> (Block, usize) {
     // 去掉公共缩进后递归解析，实现“每次展开一层”的嵌套。
     let dedented = dedent(&lines[body_start..body_end]);
     let body = parse_sequence(&dedented);
+    let raw_body = join_lines(&dedented);
 
+    // 没有块体时 `body_end == start + 1`，这里正好落回头部行自身。
+    let last = &lines[body_end - 1];
     let block = CallBlock {
         name: header.name,
         params: header.params,
         body,
+        raw_body,
+        span: Span::new(
+            header_line.line_no,
+            last.line_no,
+            header_line.start,
+            last.end,
+        ),
     };
     (Block::Call(block), cursor)
 }
 
+/// 一组行在原文中的位置范围。
+fn span_of(lines: &[SrcLine<'_>]) -> Span {
+    let first = &lines[0];
+    let last = &lines[lines.len() - 1];
+    Span::new(first.line_no, last.line_no, first.start, last.end)
+}
+
 /// 按非空行的最小缩进整体去缩进；空行被规范化为空文本。
+///
+/// 行号与字节偏移原样保留，所以嵌套块的位置仍是原文里的绝对位置。
 fn dedent<'a>(lines: &[SrcLine<'a>]) -> Vec<SrcLine<'a>> {
     let min_indent = lines
         .iter()
@@ -132,6 +152,9 @@ fn dedent<'a>(lines: &[SrcLine<'a>]) -> Vec<SrcLine<'a>> {
                     text: "",
                     indent: 0,
                     blank: true,
+                    line_no: line.line_no,
+                    start: line.start,
+                    end: line.end,
                 }
             } else {
                 let strip = min_indent.min(line.indent);
@@ -139,6 +162,9 @@ fn dedent<'a>(lines: &[SrcLine<'a>]) -> Vec<SrcLine<'a>> {
                     text: &line.text[strip..],
                     indent: line.indent - strip,
                     blank: false,
+                    line_no: line.line_no,
+                    start: line.start,
+                    end: line.end,
                 }
             }
         })
@@ -164,6 +190,7 @@ mod tests {
     fn natural(text: &str) -> Block {
         Block::Natural(NaturalBlock {
             text: text.to_string(),
+            span: Span::new(0, 0, 0, 0),
         })
     }
 
@@ -175,7 +202,29 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             body,
+            raw_body: String::new(),
+            span: Span::new(0, 0, 0, 0),
         })
+    }
+
+    /// 抹平位置信息，便于只断言结构；位置由下面两个专门的测试覆盖。
+    fn norm(block: Block) -> Block {
+        match block {
+            Block::Natural(mut natural) => {
+                natural.span = Span::new(0, 0, 0, 0);
+                Block::Natural(natural)
+            }
+            Block::Call(mut call) => {
+                call.span = Span::new(0, 0, 0, 0);
+                call.raw_body.clear();
+                call.body = call.body.into_iter().map(norm).collect();
+                Block::Call(call)
+            }
+        }
+    }
+
+    fn norm_all(blocks: Vec<Block>) -> Vec<Block> {
+        blocks.into_iter().map(norm).collect()
     }
 
     #[test]
@@ -188,7 +237,7 @@ mod tests {
     fn natural_blocks_split_on_blank_lines() {
         let blocks = parse_blocks("第一段\n仍然第一段\n\n\n第二段");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![natural("第一段\n仍然第一段"), natural("第二段")]
         );
     }
@@ -197,7 +246,7 @@ mod tests {
     fn crlf_is_supported() {
         let blocks = parse_blocks("a\r\n\r\n::x:\r\n  b\r\n");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![natural("a"), call("x", &[], vec![natural("b")])]
         );
     }
@@ -207,7 +256,7 @@ mod tests {
         // 规则 1：以 :: 开头的行永远开启调用块，哪怕前面没有空行。
         let blocks = parse_blocks("正文\n::notice:\n  内容");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![natural("正文"), call("notice", &[], vec![natural("内容")])]
         );
     }
@@ -217,7 +266,7 @@ mod tests {
         // 规则 3：缩进不严格大于即为下一个块的首行，末尾无需空行。
         let blocks = parse_blocks("::a:\n  x\n下一块");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![call("a", &[], vec![natural("x")]), natural("下一块")]
         );
     }
@@ -226,7 +275,7 @@ mod tests {
     fn blank_lines_inside_a_call_body_do_not_end_it() {
         let blocks = parse_blocks("::a:\n  x\n\n  y\n\n结尾");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![
                 call("a", &[], vec![natural("x"), natural("y")]),
                 natural("结尾"),
@@ -237,24 +286,27 @@ mod tests {
     #[test]
     fn trailing_blank_lines_are_not_part_of_the_body() {
         let blocks = parse_blocks("::a:\n  x\n\n\n");
-        assert_eq!(blocks, vec![call("a", &[], vec![natural("x")])]);
+        assert_eq!(norm_all(blocks), vec![call("a", &[], vec![natural("x")])]);
     }
 
     #[test]
     fn call_block_without_a_body() {
         let blocks = parse_blocks("::a:\n::b:\n");
-        assert_eq!(blocks, vec![call("a", &[], vec![]), call("b", &[], vec![])]);
+        assert_eq!(
+            norm_all(blocks),
+            vec![call("a", &[], vec![]), call("b", &[], vec![])]
+        );
     }
 
     #[test]
     fn call_blocks_nest_by_indentation() {
         let blocks = parse_blocks("::outer:\n  ::inner:\n    deep\n  tail");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![call(
                 "outer",
                 &[],
-                vec![call("inner", &[], vec![natural("deep")]), natural("tail"),]
+                vec![call("inner", &[], vec![natural("deep")]), natural("tail")]
             )]
         );
     }
@@ -263,7 +315,7 @@ mod tests {
     fn indented_call_line_interrupts_a_natural_block() {
         let blocks = parse_blocks("文字\n  ::x:\n    y\n后续");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![
                 natural("文字"),
                 call("x", &[], vec![natural("y")]),
@@ -276,9 +328,40 @@ mod tests {
     fn body_keeps_relative_indentation() {
         let blocks = parse_blocks("::a:\n    deep\n  shallow");
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![call("a", &[], vec![natural("  deep\nshallow")])]
         );
+    }
+
+    #[test]
+    fn spans_and_raw_body_point_at_the_original_source() {
+        let source = "::code lang=rust:\n  fn main() {}\n";
+        let blocks = parse_blocks(source);
+        let Block::Call(code) = &blocks[0] else {
+            panic!("期望一个调用块");
+        };
+
+        assert_eq!(code.span, Span::new(1, 2, 0, source.trim_end().len()));
+        assert_eq!(code.raw_body, "fn main() {}");
+        assert_eq!(code.span.slice(source), "::code lang=rust:\n  fn main() {}");
+    }
+
+    #[test]
+    fn nested_block_spans_are_absolute() {
+        let source = "::outer:\n  ::inner:\n    x\n";
+        let blocks = parse_blocks(source);
+        let Block::Call(outer) = &blocks[0] else {
+            panic!("期望外层调用块");
+        };
+        let Block::Call(inner) = &outer.body[0] else {
+            panic!("期望内层调用块");
+        };
+
+        assert_eq!(outer.span, Span::new(1, 3, 0, 25));
+        assert_eq!(outer.span.slice(source), "::outer:\n  ::inner:\n    x");
+        assert_eq!(inner.span, Span::new(2, 3, 9, 25));
+        assert_eq!(inner.span.slice(source), "  ::inner:\n    x");
+        assert_eq!(inner.raw_body, "x");
     }
 
     #[test]
@@ -301,7 +384,7 @@ mod tests {
 
         let blocks = parse_blocks(source);
         assert_eq!(
-            blocks,
+            norm_all(blocks),
             vec![call(
                 "code",
                 &[("lang", "neomark")],
