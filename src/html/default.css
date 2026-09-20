@@ -155,6 +155,29 @@ body {
   cursor: help;
 }
 
+/* 引用块 */
+.nm-quote {
+  margin: 1.2em 0;
+  padding: 0.2em 1.1em;
+  border-left: 4px solid var(--nm-border);
+  color: var(--nm-muted);
+}
+
+/* 代码块：只给容器，语法着色交给页面上引不引入高亮脚本 */
+.nm-code-block {
+  margin: 1.2em 0;
+  padding: 0.9em 1.1em;
+  border-radius: 6px;
+  background: var(--nm-code-bg);
+  overflow-x: auto;
+}
+
+.nm-code-block code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.9em;
+}
+
 .nm-error-message {
   margin: 0;
   font-weight: 600;

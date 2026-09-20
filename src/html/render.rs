@@ -503,13 +503,12 @@ mod tests {
     use super::*;
     use crate::ast::{ErrorKind, Params, Span};
     use crate::dispatch::{Context, Dispatcher, Registry};
-    use crate::handlers;
     use crate::parse::parse;
 
     fn render_source(source: &str) -> String {
         let mut ast = parse(source);
         let mut registry = Registry::new();
-        handlers::register_defaults(&mut registry);
+        crate::stdlib::register_defaults(&mut registry);
 
         let mut ctx = Context::new(source);
         Dispatcher::new(registry).run(&mut ast, &mut ctx);

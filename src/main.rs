@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use neomark::{Context, Dispatcher, Registry, handlers, html, parse};
+use neomark::{Context, Dispatcher, Registry, html, parse};
 
 const USAGE: &str = "\
 neomark — 把 neomark 文档编译成 HTML
@@ -131,7 +131,7 @@ fn run(args: &Args) -> Result<(), String> {
 
     let mut ast = parse(&source);
     let mut registry = Registry::new();
-    handlers::register_defaults(&mut registry);
+    neomark::register_defaults(&mut registry);
     let mut ctx = Context::new(&source);
     Dispatcher::new(registry).run(&mut ast, &mut ctx);
 

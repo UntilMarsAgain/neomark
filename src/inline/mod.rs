@@ -46,7 +46,7 @@
 //! * 数学按需求「包裹行为与反引号一致」：靠**游程长度相等**配对，没有
 //!   「内侧不能有空白」的守卫。所以正文里孤立的两个 `$` 会配成公式
 //!   （`$5 和 $10` 会被当成 `5 和 `）。要 Pandoc 那种守卫，在
-//!   [`scan`] 的 `$` 分支加一条判断即可。
+//!   `scan` 的 `$` 分支加一条判断即可。
 //! * 命名实体是**常用子集**，查不到的按字面保留。
 //! * 标点判定用 ASCII 标点近似 CommonMark 的 Unicode `P*` 类别。
 //! * 行内调用与链接的**内容**都被包成未解析自然块，而位置用的是外层块的
@@ -188,7 +188,7 @@ mod tests {
         ast.push_block(wrapper);
 
         let mut registry = crate::dispatch::Registry::new();
-        crate::handlers::register_defaults(&mut registry);
+        crate::stdlib::register_defaults(&mut registry);
         let mut ctx = crate::dispatch::Context::new(text);
         crate::dispatch::Dispatcher::new(registry).run(&mut ast, &mut ctx);
 

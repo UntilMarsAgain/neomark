@@ -3,14 +3,14 @@
 //! 这里只用公共 API，模拟外部使用者。
 
 use neomark::{
-    Ast, Context, Dispatcher, Handler, Matched, NodeId, Registry, handlers, html, parse,
+    Ast, Context, Dispatcher, Handler, Invocation, Matched, NodeId, Registry, handlers, html, parse,
 };
 use regex::Regex;
 
 fn render(source: &str) -> String {
     let mut ast = parse(source);
     let mut registry = Registry::new();
-    handlers::register_defaults(&mut registry);
+    neomark::register_defaults(&mut registry);
 
     let mut ctx = Context::new(source);
     Dispatcher::new(registry).run(&mut ast, &mut ctx);
@@ -22,7 +22,7 @@ fn render(source: &str) -> String {
 fn render_with(source: &str, extra: impl FnOnce(&mut Registry)) -> String {
     let mut ast = parse(source);
     let mut registry = Registry::new();
-    handlers::register_defaults(&mut registry);
+    neomark::register_defaults(&mut registry);
     extra(&mut registry);
 
     let mut ctx = Context::new(source);
@@ -33,7 +33,7 @@ fn render_with(source: &str, extra: impl FnOnce(&mut Registry)) -> String {
 fn render_page(source: &str, title: &str) -> String {
     let mut ast = parse(source);
     let mut registry = Registry::new();
-    handlers::register_defaults(&mut registry);
+    neomark::register_defaults(&mut registry);
 
     let mut ctx = Context::new(source);
     Dispatcher::new(registry).run(&mut ast, &mut ctx);
@@ -142,10 +142,9 @@ fn an_unknown_call_block_becomes_a_notice_box_without_stopping_the_rest() {
 }
 
 #[test]
-fn a_call_block_swallows_its_subtree_into_one_box() {
-    // 没有 ::code 展开器时，::code 整块（连同内部嵌套的块）变成一个提示框，
-    // 内部不会再各自爆出提示框。
-    let source = "::code lang=neomark:\n  ::notice:\n    内层\n";
+fn an_unregistered_call_block_swallows_its_subtree_into_one_box() {
+    // 没有展开器的调用块整块变成一个提示框，内部不会再各自爆出提示框。
+    let source = "::unknown lang=neomark:\n  ::notice:\n    内层\n";
     let html = render(source);
 
     assert_eq!(html.matches("nm-error-no-handler").count(), 1);
@@ -414,7 +413,9 @@ fn a_wrapper_can_read_capture_groups() {
             Regex::new("^badge-(?P<kind>[a-z]+)$").unwrap(),
             handlers::Wrap::tag("span")
                 .class("badge")
-                .class_from(|m: &Matched| m.capture_named("kind").unwrap_or_default().to_string())
+                .class_from(|call: &Invocation| {
+                    call.capture_named("kind").unwrap_or_default().to_string()
+                })
                 .inline(handlers::NaturalExpander::default()),
         );
     });
@@ -429,7 +430,7 @@ fn an_unanchored_pattern_can_tell_what_actually_matched() {
     let html = render_with("::xh3y: 正文", |registry| {
         registry.register(
             Regex::new("h[1-6]").unwrap(),
-            handlers::Wrap::tag_from(|m: &Matched| m.matched().to_string())
+            handlers::Wrap::tag_from(|call: &Invocation| call.matched().to_string())
                 .inline(handlers::NaturalExpander::default()),
         );
     });
@@ -453,11 +454,11 @@ fn a_wrapper_can_use_several_capture_groups_at_once() {
             Regex::new(r"^figure-(?P<kind>\w+)-v(?P<version>\d+)$").unwrap(),
             handlers::Wrap::tag("figure")
                 .class("figure")
-                .class_from(|m: &Matched| {
+                .class_from(|call: &Invocation| {
                     format!(
                         "{}-v{}",
-                        m.capture_named("kind").unwrap_or("unknown"),
-                        m.capture_named("version").unwrap_or("0"),
+                        call.capture_named("kind").unwrap_or("unknown"),
+                        call.capture_named("version").unwrap_or("0"),
                     )
                 })
                 .inline(handlers::NaturalExpander::default()),
@@ -533,6 +534,64 @@ fn a_block_element_from_an_inline_call_breaks_the_paragraph() {
         )
     );
 }
+#[test]
+fn a_quote_block_carries_its_origin() {
+    assert_eq!(
+        render("::quote origin=\"《哥德尔、艾舍尔、巴赫》\": 引文"),
+        concat!(
+            "<blockquote class=\"nm-quote\" data-origin=\"《哥德尔、艾舍尔、巴赫》\">",
+            "<p class=\"nm-p\">引文</p>",
+            "</blockquote>"
+        )
+    );
+
+    // 没有 origin 就不写那个属性——缺席与空是两件事
+    assert_eq!(
+        render("::quote: 引文"),
+        "<blockquote class=\"nm-quote\"><p class=\"nm-p\">引文</p></blockquote>"
+    );
+    assert_eq!(
+        render("::quote origin=: 引文"),
+        "<blockquote class=\"nm-quote\"><p class=\"nm-p\">引文</p></blockquote>"
+    );
+}
+
+#[test]
+fn a_quote_block_still_parses_its_body_as_blocks() {
+    let html = render("::quote:\n  ::h2: 内层标题\n\n  段落");
+
+    assert!(html.contains("<h2 class=\"nm-h2\">内层标题</h2>"), "{html}");
+    assert!(html.contains("<p class=\"nm-p\">段落</p>"), "{html}");
+}
+
+#[test]
+fn a_code_block_labels_its_language_for_highlighters() {
+    assert_eq!(
+        render("::code language=c++:\n  int main() {}"),
+        concat!(
+            "<pre class=\"nm-code-block\"><code class=\"language-c++\">",
+            "int main() {}",
+            "</code></pre>"
+        )
+    );
+
+    // 没有 language 就只有外层类名，交给高亮脚本自己判断
+    assert_eq!(
+        render("::code:\n  plain"),
+        "<pre class=\"nm-code-block\"><code>plain</code></pre>"
+    );
+}
+
+#[test]
+fn a_code_block_escapes_its_content() {
+    // 代码里的 `<` `&` 必须转义，否则就是把源码当 HTML 注进去了
+    let html = render("::code language=rust: if a < b && c > d {}");
+
+    assert!(
+        html.contains("if a &lt; b &amp;&amp; c &gt; d {}"),
+        "{html}"
+    );
+}
 
 #[test]
 fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
@@ -541,15 +600,18 @@ fn a_hard_break_uses_a_backslash_but_a_soft_break_stays_a_newline() {
 }
 
 #[test]
-fn a_call_block_still_swallows_its_subtree_into_one_box() {
-    // 没有 ::code 展开器时，::code 整块（连同内部嵌套的块）变成一个提示框，
-    // 内部不会再各自爆出提示框。
-    let source = "::code lang=neomark:\n  ::notice:\n    内层 **没有** 行内解析\n";
+fn a_code_block_is_verbatim_so_nested_calls_stay_text() {
+    // `::code` 现在有展开器了：块体**原样**输出，里面的 `::notice:` 只是文字，
+    // 既不会再去解析，也不会报错——这正是代码块与包装器的分界。
+    let source = "::code language=neomark:\n  ::notice:\n    内层 **没有** 行内解析\n";
     let html = render(source);
 
-    assert_eq!(html.matches("nm-error-no-handler").count(), 1);
-    // 提示框里是原样回显，不做行内解析
-    assert!(html.contains("内层 **没有** 行内解析"));
+    assert!(!html.contains("nm-error"), "{html}");
+    assert!(
+        html.contains("<pre class=\"nm-code-block\"><code class=\"language-neomark\">"),
+        "{html}"
+    );
+    assert!(html.contains("内层 **没有** 行内解析"), "{html}");
 }
 
 #[test]

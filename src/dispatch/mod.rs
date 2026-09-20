@@ -53,12 +53,14 @@
 
 mod dispatcher;
 mod handler;
+mod invocation;
 mod key;
 mod matched;
 mod registry;
 
 pub use dispatcher::Dispatcher;
 pub use handler::{Context, Fallback, Handler};
+pub use invocation::Invocation;
 pub use key::Key;
 pub use matched::Matched;
 pub use registry::{Found, Registry};

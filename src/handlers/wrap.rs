@@ -4,12 +4,15 @@
 //! `div`」。所以这里给注册这一步配个语法糖。
 
 use crate::ast::{Ast, Attr, NodeId};
-use crate::dispatch::{Context, Handler, Matched};
+use crate::dispatch::{Context, Handler, Invocation, Matched};
 
 use super::natural::NaturalExpander;
 
-/// 由[命中信息](Matched)算出一个属性值，例如「标签名 = 实际匹配到的那一段」。
-type Derive = Box<dyn Fn(&Matched<'_>) -> String>;
+/// 由[调用信息](Invocation)算出一个属性值，例如「类名 = language 参数」。
+type Derive = Box<dyn Fn(&Invocation<'_>) -> String>;
+
+/// 同上，但可以表示「这个属性不该出现」。
+type AttrDerive = Box<dyn Fn(&Invocation<'_>) -> Option<String>>;
 
 /// 通用包装器：把调用整个换成一层元素。
 ///
@@ -17,7 +20,7 @@ type Derive = Box<dyn Fn(&Matched<'_>) -> String>;
 /// 调用名：
 ///
 /// ```
-/// use neomark::{Matched, Registry, handlers::Wrap};
+/// use neomark::{Invocation, Registry, handlers::Wrap};
 /// use regex::Regex;
 ///
 /// let mut registry = Registry::new();
@@ -28,8 +31,8 @@ type Derive = Box<dyn Fn(&Matched<'_>) -> String>;
 /// // 算出来：`::h3` → <h3 class="nm-h3">正文</h3>
 /// registry.register(
 ///     Regex::new("^h[1-6]$").unwrap(),
-///     Wrap::tag_from(|m: &Matched| m.matched().to_string())
-///         .class_from(|m: &Matched| format!("nm-{}", m.matched())),
+///     Wrap::tag_from(|call: &Invocation| call.matched().to_string())
+///         .class_from(|call: &Invocation| format!("nm-{}", call.matched())),
 /// );
 /// ```
 ///
@@ -56,6 +59,7 @@ pub struct Wrap {
     classes: Vec<String>,
     classes_from: Vec<Derive>,
     attrs: Vec<Attr>,
+    attrs_from: Vec<(String, AttrDerive)>,
     class_prefix: String,
     inline: Option<NaturalExpander>,
 }
@@ -69,16 +73,16 @@ impl Wrap {
         }
     }
 
-    /// 标签名由[命中信息](Matched)算出来。
+    /// 标签名由[调用信息](Invocation)算出来。
     ///
-    /// `Wrap::tag_from(|m: &Matched| m.matched().to_string())` 让标签等于正则
-    /// 实际匹配到的那一段——`^h[1-6]$` 命中 `h3` 就产出 `<h3>`。
+    /// `Wrap::tag_from(|call: &Invocation| call.matched().to_string())` 让标签等于
+    /// 正则实际匹配到的那一段——`^h[1-6]$` 命中 `h3` 就产出 `<h3>`。
     ///
     /// 与 [`tag`](Wrap::tag) 二选一：标签要么写死，要么算出来。
     ///
-    /// 闭包参数**要写出类型**（`|m: &Matched|`）：`impl Fn` 参数上的闭包推断
-    /// 拿不到这个匿名生命周期，不写就编不过。
-    pub fn tag_from(derive: impl Fn(&Matched<'_>) -> String + 'static) -> Self {
+    /// 闭包参数**要写出类型**（`|call: &Invocation|`）：`impl Fn` 参数上的闭包
+    /// 推断拿不到这个匿名生命周期，不写就编不过。
+    pub fn tag_from(derive: impl Fn(&Invocation<'_>) -> String + 'static) -> Self {
         Self {
             tag_from: Some(Box::new(derive)),
             ..Self::empty()
@@ -93,6 +97,7 @@ impl Wrap {
             classes: Vec::new(),
             classes_from: Vec::new(),
             attrs: Vec::new(),
+            attrs_from: Vec::new(),
             class_prefix: String::new(),
             inline: None,
         }
@@ -100,10 +105,10 @@ impl Wrap {
 
     /// 标签名取**正则实际匹配到的那一段**。
     ///
-    /// 等价于 `tag_from(|m: &Matched| m.matched().to_string())`，但不用给闭包
-    /// 参数写类型。内置标题用的就是它。
+    /// 等价于 `tag_from(|call: &Invocation| call.matched().to_string())`，但不用给
+    /// 闭包参数写类型。内置标题用的就是它。
     pub fn tag_from_match() -> Self {
-        Self::tag_from(|matched: &Matched<'_>| matched.matched().to_string())
+        Self::tag_from(|call: &Invocation<'_>| call.matched().to_string())
     }
 
     /// 追加一个固定类名。
@@ -114,9 +119,9 @@ impl Wrap {
 
     /// 加一个「正则**实际匹配到的那一段**」当类名（会净化）。
     ///
-    /// 等价于 `class_from(|m: &Matched| m.matched().to_string())`。
+    /// 等价于 `class_from(|call: &Invocation| call.matched().to_string())`。
     pub fn class_from_match(self) -> Self {
-        self.class_from(|matched: &Matched<'_>| sanitize_class(matched.matched()))
+        self.class_from(|call: &Invocation<'_>| sanitize_class(call.matched()))
     }
 
     /// 给**派生出来的**类名加统一前缀。
@@ -130,29 +135,32 @@ impl Wrap {
         self
     }
 
-    /// 追加一个由[命中信息](Matched)算出的类名。
+    /// 追加一个由[调用信息](Invocation)算出的类名。
     ///
-    /// **想用捕获组就用这里**：`m.capture(1)`、`m.capture_named("kind")` 都行，
-    /// 多个组拼一个类名也行：
+    /// **想用捕获组或参数就用这里**：`call.capture(1)`、`call.capture_named("kind")`、
+    /// `call.param("language")` 都能取，几个拼一个类名也行：
     ///
     /// ```
-    /// use neomark::{Matched, handlers::Wrap};
+    /// use neomark::{Invocation, handlers::Wrap};
     ///
     /// // `^figure-(?P<kind>\w+)-v(?P<version>\d+)$` 命中 `figure-chart-v2`
-    /// let wrap = Wrap::tag("figure").class("figure").class_from(|m: &Matched| {
+    /// let wrap = Wrap::tag("figure").class("figure").class_from(|call: &Invocation| {
     ///     format!(
     ///         "{}-v{}",
-    ///         m.capture_named("kind").unwrap_or("unknown"),
-    ///         m.capture_named("version").unwrap_or("0"),
+    ///         call.capture_named("kind").unwrap_or("unknown"),
+    ///         call.capture_named("version").unwrap_or("0"),
     ///     )
     /// });
     /// # let _ = wrap;
     /// ```
     ///
+    /// 参数与捕获组都从 [`Invocation`] 上取：`call.param("language")`、
+    /// `call.capture(1)`、`call.capture_named("kind")` 都能用。
+    ///
     /// 常见派生不必写闭包：[`class_from_match`](Wrap::class_from_match) /
-    /// [`class_from_name`](Wrap::class_from_name) 已经覆盖，闭包参数
-    /// **要写出类型**（`|m: &Matched|`）这一步留给不常见的写法。
-    pub fn class_from(mut self, derive: impl Fn(&Matched<'_>) -> String + 'static) -> Self {
+    /// [`class_from_name`](Wrap::class_from_name) 已经覆盖；闭包参数
+    /// **要写出类型**（`|call: &Invocation|`）这一步留给不常见的写法。
+    pub fn class_from(mut self, derive: impl Fn(&Invocation<'_>) -> String + 'static) -> Self {
         self.classes_from.push(Box::new(derive));
         self
     }
@@ -163,11 +171,38 @@ impl Wrap {
     /// 是 [`class_from`](Wrap::class_from) 的常用特例。注意它用的是**调用名**而
     /// 不是正则实际匹配到的那一段：模式常常只锚开头（`^note-`），匹配到的只是
     /// 前缀，而当类名用的应当是完整的调用名。要那一段就用
-    /// `class_from(|m: &Matched| m.matched().to_string())`。
+    /// `class_from(|call: &Invocation| call.matched().to_string())`。
     ///
     /// 非法字符会被换成 `-`，因为类名不能带空格。
     pub fn class_from_name(self) -> Self {
-        self.class_from(|matched| sanitize_class(matched.name()))
+        self.class_from(|call| sanitize_class(call.name()))
+    }
+
+    /// 从**参数**取一个属性：参数缺席（或为空）时不写这个属性。
+    ///
+    /// `::quote origin=出处` 就是 `attr_from_param("origin", "data-origin")`。
+    /// 参数缺席与参数为空是两件事，所以这里对两者都不写属性——省得留下
+    /// `data-origin=""` 这种噪声。
+    pub fn attr_from_param(self, param: &str, attr: impl Into<String>) -> Self {
+        let param = param.to_string();
+
+        self.attr_from(attr, move |call: &Invocation<'_>| {
+            call.param(&param)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+    }
+
+    /// 追加一个由[调用信息](Invocation)算出的属性：返回 `None` 就跳过。
+    ///
+    /// 闭包参数**要写出类型**（`|call: &Invocation|`）。
+    pub fn attr_from(
+        mut self,
+        attr: impl Into<String>,
+        derive: impl Fn(&Invocation<'_>) -> Option<String> + 'static,
+    ) -> Self {
+        self.attrs_from.push((attr.into(), Box::new(derive)));
+        self
     }
 
     /// 追加一个普通属性。
@@ -191,9 +226,12 @@ impl Wrap {
     }
 
     /// 组装最终的标签名与属性表。
-    fn build(&self, matched: &Matched<'_>) -> (String, Vec<Attr>) {
+    ///
+    /// **必须在动树之前算完**：派生闭包要读节点（参数就在节点里），而拿到标签与
+    /// 属性之后就要 `&mut Ast` 了。
+    fn build(&self, call: &Invocation<'_>) -> (String, Vec<Attr>) {
         let tag = match &self.tag_from {
-            Some(derive) => derive(matched),
+            Some(derive) => derive(call),
             None => self.tag.clone(),
         };
 
@@ -201,11 +239,17 @@ impl Wrap {
         classes.extend(
             self.classes_from
                 .iter()
-                .map(|derive| format!("{}{}", self.class_prefix, derive(matched))),
+                .map(|derive| format!("{}{}", self.class_prefix, derive(call))),
         );
         classes.retain(|class| !class.is_empty());
 
         let mut attrs = self.attrs.clone();
+        attrs.extend(
+            self.attrs_from.iter().filter_map(|(name, derive)| {
+                derive(call).map(|value| Attr::new(name.clone(), value))
+            }),
+        );
+
         if !classes.is_empty() {
             // 类名放最前面，读起来顺眼。
             attrs.insert(0, Attr::new("class", classes.join(" ")));
@@ -223,13 +267,17 @@ impl Handler for Wrap {
         _ctx: &mut Context<'_>,
         matched: &Matched<'_>,
     ) -> Vec<NodeId> {
-        let Some(call) = ast.call(node) else {
-            return Vec::new();
-        };
-        let span = call.span;
-        let body = call.raw_body.clone();
+        // 先把标签、属性、块体都算出来（这一段要读 `Ast`），再动树。
+        let (tag, attrs, span, body) = {
+            let Some(call) = ast.call(node) else {
+                return Vec::new();
+            };
+            let invocation = Invocation::new(matched, &call.params);
+            let (tag, attrs) = self.build(&invocation);
 
-        let (tag, attrs) = self.build(matched);
+            (tag, attrs, call.span, call.raw_body.clone())
+        };
+
         let element = ast.new_element(tag, attrs);
 
         match &self.inline {
@@ -267,12 +315,25 @@ fn sanitize_class(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Params;
     use regex::Regex;
+
+    /// 精确名命中、没有参数——最简单的一次调用。
+    fn plain() -> (&'static Matched<'static>, &'static Params) {
+        static EMPTY: std::sync::OnceLock<Params> = std::sync::OnceLock::new();
+        static MATCHED: std::sync::OnceLock<Matched<'static>> = std::sync::OnceLock::new();
+
+        (
+            MATCHED.get_or_init(Matched::unnamed),
+            EMPTY.get_or_init(Params::new),
+        )
+    }
 
     #[test]
     fn classes_are_collected_into_one_attribute_in_order() {
+        let (matched, params) = plain();
         let wrap = Wrap::tag("div").class("a").class("b");
-        let (tag, attrs) = wrap.build(&Matched::unnamed());
+        let (tag, attrs) = wrap.build(&Invocation::new(matched, params));
 
         assert_eq!(tag, "div");
         assert_eq!(attrs, vec![Attr::new("class", "a b")]);
@@ -280,22 +341,29 @@ mod tests {
 
     #[test]
     fn name_as_class_is_appended_last() {
+        let name = "note-warning".to_string();
+        let matched = Matched::new(&name, None);
+        let params = Params::new();
+
         let wrap = Wrap::tag("div").class("note").class_from_name();
-        let (_, attrs) = wrap.build(&Matched::new("note-warning", None));
+        let (_, attrs) = wrap.build(&Invocation::new(&matched, &params));
 
         assert_eq!(attrs, vec![Attr::new("class", "note note-warning")]);
     }
 
     #[test]
     fn name_as_class_is_sanitized_because_class_names_cannot_contain_spaces() {
+        let (unnamed, empty) = plain();
         let wrap = Wrap::tag("div").class_from_name();
 
         // ASCII 部分留着，其余每个字符换成一个 `-`
-        let (_, attrs) = wrap.build(&Matched::new("note 警告", None));
+        let name = "note 警告".to_string();
+        let matched = Matched::new(&name, None);
+        let (_, attrs) = wrap.build(&Invocation::new(&matched, &Params::new()));
         assert_eq!(attrs, vec![Attr::new("class", "note---")]);
 
         // 名字为空时干脆不加这个属性
-        let (_, attrs) = wrap.build(&Matched::unnamed());
+        let (_, attrs) = wrap.build(&Invocation::new(unnamed, empty));
         assert!(attrs.is_empty());
     }
 
@@ -304,6 +372,7 @@ mod tests {
         let name = "h3".to_string();
         let captures = Regex::new("^h([1-6])$").unwrap().captures(&name);
         let matched = Matched::new(&name, captures);
+        let params = Params::new();
 
         // 这就是要区分 `matched()` 与 `capture()` 的原因：整段匹配是 `h3`，
         // 而捕获组 1 只是 `3`。
@@ -311,21 +380,37 @@ mod tests {
         assert_eq!(matched.capture(1), Some("3"));
 
         // 标签取**整段匹配**，类名取**捕获组**
-        let wrap = Wrap::tag_from(|m: &Matched| m.matched().to_string())
-            .class_from(|m: &Matched| format!("nm-{}", m.capture(1).unwrap_or_default()));
+        let wrap = Wrap::tag_from(|call: &Invocation| call.matched().to_string())
+            .class_from(|call: &Invocation| format!("nm-{}", call.capture(1).unwrap_or_default()));
 
-        let (tag, attrs) = wrap.build(&matched);
+        let (tag, attrs) = wrap.build(&Invocation::new(&matched, &params));
         assert_eq!(tag, "h3");
         assert_eq!(attrs, vec![Attr::new("class", "nm-3")]);
     }
 
     #[test]
+    fn a_class_can_come_from_a_parameter_not_just_the_name() {
+        // 补上的那件事：派生闭包读得到**参数**（`Matched` 里没有参数）。
+        let wrap = Wrap::tag("code").class_from(|call: &Invocation| {
+            format!("language-{}", call.param("language").unwrap_or("plaintext"))
+        });
+
+        let (matched, _) = plain();
+        let mut params = Params::new();
+        params.push("language", "rust");
+
+        let (_, attrs) = wrap.build(&Invocation::new(matched, &params));
+        assert_eq!(attrs, vec![Attr::new("class", "language-rust")]);
+    }
+
+    #[test]
     fn extra_attributes_survive_and_class_comes_first() {
+        let (matched, params) = plain();
         let wrap = Wrap::tag("img")
             .attr("src", "a.png")
             .flag("lazy")
             .class("pic");
-        let (_, attrs) = wrap.build(&Matched::unnamed());
+        let (_, attrs) = wrap.build(&Invocation::new(matched, params));
 
         assert_eq!(
             attrs,

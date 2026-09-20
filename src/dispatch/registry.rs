@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn the_default_heading_pattern_is_anchored_and_covers_h1_to_h6() {
-        let pattern = crate::handlers::HEADING_PATTERN;
+        let pattern = crate::stdlib::heading::PATTERN;
 
         for level in 1..=6 {
             assert!(

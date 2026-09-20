@@ -1,46 +1,18 @@
-//! 内置展开器。
+//! 展开器的**机制**。
 //!
-//! 目前提供：
+//! 这里放的是「怎么写展开器」，具体的展开器在 [`stdlib`](crate::stdlib)。分开的
+//! 理由：机制会随内核演进（要改就改这里），标准库只会越来越长（加就加那边）。
 //!
 //! * [`NaturalExpander`]——自然块 → 段落（或行内内容）。它既是一个
 //!   [`Handler`](crate::dispatch::Handler)，也是一个**可直接调用的接口**，
 //!   其他展开器解析文本时用它。
-//! * [`Wrap`]——**注册时的语法糖**：把调用套一层标签/带 class 的 div。
-//!   内置的 `::h1` ~ `::h6` 就是用它的行内包装写出来的，没有专门的标题展开器。
+//! * [`Wrap`]——把调用套一层标签/带 class 的 div。**大多数展开器就干这件事**，
+//!   所以它是注册时的语法糖；读参数、读捕获组、选块级还是行内包装都在这里。
 //!
-//! 注册默认展开器用 [`register_defaults`]。想换行内配置，就自己构造一个
-//! [`NaturalExpander`] 再注册。
+//! 想一次装上内置展开器用 [`register_defaults`](crate::stdlib::register_defaults)。
 
 mod natural;
 mod wrap;
 
 pub use natural::NaturalExpander;
 pub use wrap::Wrap;
-
-use crate::dispatch::Registry;
-
-/// 内置的标题模式：`h1` ~ `h6`。
-///
-/// 正则在这里能把级别写准，所以不需要别的校验——`ha`、`h7` 根本不会命中它，
-/// 会落到兜底展开器上得到一个「未注册的调用块」报错。
-pub const HEADING_PATTERN: &str = "^h[1-6]$";
-
-/// 注册内置展开器。
-///
-/// * 自然块槽位：默认配置的 [`NaturalExpander`]；
-/// * `::h1` ~ `::h6`：一条正则模式 [`HEADING_PATTERN`]，交给一个 [`Wrap`]。
-///
-/// 标题**没有专门的展开器**——它就是个包装器：标签名取正则匹配到的那一段
-/// （`h1`~`h6`），类名加 `nm-` 前缀，正文按行内解析（`<h3>` 里不能有 `<p>`）。
-pub fn register_defaults(registry: &mut Registry) {
-    let natural = NaturalExpander::default();
-
-    registry.register_natural(natural.clone());
-    registry.register(
-        regex::Regex::new(HEADING_PATTERN).expect("内置标题模式在测试里被验证过"),
-        Wrap::tag_from_match()
-            .class_prefix("nm-")
-            .class_from_match()
-            .inline(natural),
-    );
-}

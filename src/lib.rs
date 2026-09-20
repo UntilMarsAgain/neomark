@@ -34,18 +34,25 @@
 //! 按名分发时，展开器会收到 [`Matched`]：完整调用名、正则**实际匹配到**的那
 //! 一段、以及各捕获组。所以一条 `^h[1-6]$` 注册的包装器能知道自己是 `h3`。
 //!
+//! 要**参数**的话用 [`Invocation`]——它把命中信息与这次的参数合在一起，包装器的
+//! 派生闭包拿到的就是它，所以「类名由某个参数算出来」是写得到的。
+//!
 //! [`NaturalExpander`] 是自然块展开器，**同时是一个可直接调用的接口**：
 //! 其他展开器或外部解析器要「把这段文本当自然块解析」时直接调它的
 //! [`block`](NaturalExpander::block) / [`inline`](NaturalExpander::inline)，
-//! 不必绕调度器——内置的 `::h1` ~ `::h6` 就是这么写的。
+//! 不必绕调度器——`::h1` ~ `::h6` 就是这么写的。
 //!
 //! 它持有一份行内层[配置](Options)，所以每一项行内语法都可以单独关掉。
+//!
+//! 内置展开器都在 [`stdlib`]（调用块标准库），[`register_defaults`] 一次装上。
 //!
 //! ## 模块结构
 //!
 //! * [`ast`]：块树 —— 一棵 `indextree` arena 树，是调度器与渲染器唯一依赖的稳定层；
 //! * [`dispatch`]：块的种类 → 展开器的分发与改写；
-//! * [`handlers`]：内置展开器（自然块 → 段落、`::h1` ~ `::h6`）；
+//! * [`handlers`]：展开器的**机制**（自然块 → 段落、通用[包装器](Wrap)）；
+//! * [`stdlib`]：调用块**标准库**（`::h1` ~ `::h6`、`::quote`、`::code`）——
+//!   机制会随内核演进，标准库只会越来越长，所以分开；
 //! * [`html`]：把已展开的树写成 HTML，[`html::render_page`] 产出内嵌默认 CSS 的完整页面；
 //! * `parse`：解析器实现，内部模块不对外暴露，只通过 crate 根重新导出入口。
 //!
@@ -61,7 +68,7 @@
 //! let mut ast = parse(source);
 //!
 //! let mut registry = Registry::new();
-//! handlers::register_defaults(&mut registry);
+//! neomark::register_defaults(&mut registry);
 //!
 //! let mut ctx = Context::new(source);
 //! Dispatcher::new(registry).run(&mut ast, &mut ctx);
@@ -90,6 +97,7 @@ pub mod dispatch;
 pub mod handlers;
 pub mod html;
 pub mod inline;
+pub mod stdlib;
 
 mod parse;
 
@@ -103,7 +111,10 @@ pub use ast::{
     Ast, Attr, Block, CallBlock, ErrorKind, ErrorNode, KindTag, NaturalBlock, NodeId, NodeKind,
     Params, Span,
 };
-pub use dispatch::{Context, Dispatcher, Fallback, Found, Handler, Key, Matched, Registry};
+pub use dispatch::{
+    Context, Dispatcher, Fallback, Found, Handler, Invocation, Key, Matched, Registry,
+};
 pub use handlers::{NaturalExpander, Wrap};
 pub use inline::Options;
 pub use parse::{CallHeader, format_call_header, parse, parse_call_header};
+pub use stdlib::register_defaults;
