@@ -52,6 +52,39 @@ mod tests {
     }
 
     #[test]
+    fn the_default_css_styles_every_class_our_blocks_emit() {
+        // 类名写在渲染器里、样式写在 default.css 里，两边分处两地：
+        // 改了名字忘了改另一边，页面上不会报错，只会没样式。
+        for class in [
+            ".nm-document",
+            ".nm-p",
+            ".nm-h1",
+            ".nm-h6",
+            ".nm-quote",
+            ".nm-code-block",
+            ".nm-code-inline",
+            ".nm-instance",
+            ".nm-error",
+            ".nm-error-inline",
+            ".nm-icon",
+            ".nm-link",
+            ".nm-mark",
+            ".nm-math",
+        ] {
+            assert!(DEFAULT_CSS.contains(class), "默认样式表里缺少 {class}");
+        }
+    }
+
+    #[test]
+    fn padded_boxes_clear_their_childrens_edge_margins() {
+        // `.nm-p` 自带 1.1em 下外边距。带 padding 的框如果不清掉首尾子元素的
+        // 外边距，句末就会空出一大截（外边距没法穿透 padding 折叠出去）。
+        assert!(DEFAULT_CSS.contains(".nm-quote > :last-child"));
+        assert!(DEFAULT_CSS.contains(".nm-quote > :first-child"));
+        assert!(DEFAULT_CSS.contains(".nm-document > :first-child"));
+    }
+
+    #[test]
     fn the_page_is_self_contained() {
         let html = page("你好", "标题");
 

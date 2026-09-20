@@ -158,9 +158,19 @@ body {
 /* 引用块 */
 .nm-quote {
   margin: 1.2em 0;
-  padding: 0.2em 1.1em;
+  padding: 0.9em 1.1em;
   border-left: 4px solid var(--nm-border);
   color: var(--nm-muted);
+}
+
+/* 框内的首尾子元素不该再自带外边距，否则上下会各空出一大截、
+   而且和 padding 叠起来看着不对称。（`.nm-document` 早就这么做首个子元素了。） */
+.nm-quote > :first-child {
+  margin-top: 0;
+}
+
+.nm-quote > :last-child {
+  margin-bottom: 0;
 }
 
 /* 代码块：只给容器，语法着色交给页面上引不引入高亮脚本 */
