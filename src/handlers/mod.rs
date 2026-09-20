@@ -36,7 +36,7 @@ pub fn register_defaults(registry: &mut Registry) {
     let natural = NaturalExpander::default();
 
     registry.register_natural(natural.clone());
-    registry.register_pattern(
+    registry.register(
         regex::Regex::new(HEADING_PATTERN).expect("内置标题模式在测试里被验证过"),
         Wrap::tag_from_match()
             .class_prefix("nm-")

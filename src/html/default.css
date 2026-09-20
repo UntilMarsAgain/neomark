@@ -91,7 +91,7 @@ body {
 
 /* Emoji：渲染器包了一层 span，所以可以按需调整尺寸与间距；
  * 将来换成手搓 SVG 时，这个类名就是挂载点。 */
-.nm-emoji {
+.nm-icon {
   line-height: 1;
   font-style: normal;
 }
@@ -142,6 +142,16 @@ body {
   border-radius: 6px;
   background: var(--nm-error-bg);
   color: var(--nm-error-fg);
+}
+
+/* 行内位置的报错：只占一行，不能带块级的边距与内边距。 */
+.nm-error-inline {
+  padding: 0.05em 0.4em;
+  border: 1px solid var(--nm-error-border);
+  border-radius: 3px;
+  background: var(--nm-error-bg);
+  color: var(--nm-error-fg);
+  font-size: 0.92em;
 }
 
 .nm-error-message {

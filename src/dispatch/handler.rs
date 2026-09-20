@@ -64,7 +64,7 @@ use crate::ast::{Ast, ErrorKind, ErrorNode, KindTag, NodeId, Span};
 /// }
 ///
 /// let mut registry = Registry::new();
-/// registry.register_pattern(
+/// registry.register(
 ///     Regex::new(r"^figure-(?P<kind>\w+)-v(?P<version>\d+)$").unwrap(),
 ///     Figure,
 /// );
@@ -142,12 +142,17 @@ pub trait Handler {
         };
         let name = name.to_string();
 
-        vec![ast.new_error(ErrorNode::new(
-            ErrorKind::NoHandler,
-            format!("没有展开器能处理行内调用 {{{name}}}"),
-            span,
-            ctx.slice(span),
-        ))]
+        vec![
+            ast.new_error(
+                ErrorNode::new(
+                    ErrorKind::NoHandler,
+                    format!("没有展开器能处理行内调用 {{{name}}}"),
+                    span,
+                    ctx.slice(span),
+                )
+                .at_inline(),
+            ),
+        ]
     }
 
     /// 展开一个自然块。默认产出报错节点。

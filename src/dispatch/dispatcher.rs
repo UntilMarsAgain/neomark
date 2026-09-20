@@ -96,25 +96,20 @@ impl Dispatcher {
 
     /// 展开一个行内调用。
     ///
-    /// 与块调用不同：名字没有注册展开器时它**保持原样**（连兜底报错都不加），
-    /// 交给渲染器按名字解释。`{{smile}}` / `:smile:` 就是这条路——emoji 表
-    /// 属于渲染器，不认识的名字原样回显。
+    /// 和块调用**一样**：名字没人认领就交给兜底展开器（默认产出报错节点）。
+    /// 行内图标 `:name:` 走的是另一条路——它是呈现，压根不进调度器，由渲染器
+    /// 查表。
     fn expand_inline_call(&self, ast: &mut Ast, node: NodeId, ctx: &mut Context<'_>) {
         let name = ast.inline_call(node).map(|(name, _, _)| name.to_string());
-        let found = name.as_deref().and_then(|name| self.registry.find(name));
 
-        if let Some(found) = found {
-            let matched = Matched::new(name.as_deref().unwrap_or_default(), found.captures);
-            let replacement = found.handler.expand(node, ast, ctx, &matched);
-            self.splice(ast, node, replacement, ctx);
-            return;
-        }
+        let (handler, captures) = match name.as_deref().and_then(|name| self.registry.find(name)) {
+            Some(found) => (found.handler, found.captures),
+            None => (self.registry.fallback(), None),
+        };
 
-        // 保持原样，但内容（首行内容那个未解析自然块）仍要继续推进。
-        let children: Vec<NodeId> = ast.children(node).collect();
-        for child in children {
-            self.expand_node(ast, child, ctx);
-        }
+        let matched = Matched::new(name.as_deref().unwrap_or_default(), captures);
+        let replacement = handler.expand(node, ast, ctx, &matched);
+        self.splice(ast, node, replacement, ctx);
     }
 
     /// 用 `replacement` 在原位替换掉 `node`，再递归处理替换结果。
@@ -455,8 +450,9 @@ mod tests {
     }
 
     #[test]
-    fn an_inline_call_without_an_expander_is_left_alone() {
-        // 名字没有展开器 → 保持原样，连兜底报错都不加，交给渲染器解释。
+    fn an_inline_call_without_an_expander_falls_back_like_a_block_call() {
+        // 行内调用与块调用一样：没人认领就交给兜底展开器（默认报错）。
+        // 行内图标 `:name:` 才是不进调度器、由渲染器查表的那一类。
         let mut registry = Registry::new();
         registry.register_natural(RealNaturalExpander::default());
 
@@ -464,7 +460,7 @@ mod tests {
 
         assert_eq!(
             sexpr(&ast),
-            r#"(paragraph text("正文 ") inline-call nope text(" 结束"))"#
+            r#"(paragraph text("正文 ") error("没有展开器能处理行内调用 {nope}") text(" 结束"))"#
         );
     }
 
@@ -502,8 +498,8 @@ mod tests {
     fn exact_names_beat_patterns_and_later_patterns_beat_earlier_ones() {
         let build = || {
             let mut registry = Registry::new();
-            registry.register_pattern(regex::Regex::new("^h.*$").unwrap(), Marker("star"));
-            registry.register_pattern(regex::Regex::new("^h.$").unwrap(), Marker("question"));
+            registry.register(regex::Regex::new("^h.*$").unwrap(), Marker("star"));
+            registry.register(regex::Regex::new("^h.$").unwrap(), Marker("question"));
             registry.register("h1", Marker("exact"));
             registry
         };
@@ -524,8 +520,8 @@ mod tests {
     #[test]
     fn a_pattern_registered_twice_keeps_only_the_last_handler() {
         let mut registry = Registry::new();
-        registry.register_pattern(regex::Regex::new("^h.$").unwrap(), Marker("first"));
-        registry.register_pattern(regex::Regex::new("^h.$").unwrap(), Marker("second"));
+        registry.register(regex::Regex::new("^h.$").unwrap(), Marker("first"));
+        registry.register(regex::Regex::new("^h.$").unwrap(), Marker("second"));
 
         assert_eq!(registry.patterns().count(), 1);
         assert_eq!(sexpr(&run("::h3:\n", registry)), r#"text("second:h3")"#);

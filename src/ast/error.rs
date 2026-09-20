@@ -16,6 +16,14 @@ pub struct ErrorNode {
     pub span: Span,
     /// 未能展开的块在原文中的完整文本（含头部行、含原始缩进）。
     pub content: String,
+    /// 这个报错落在**行内**位置还是**块级**位置。
+    ///
+    /// 由**产出方**决定：`expand_call` / `expand_natural` 产出的是块级，
+    /// `expand_inline` 产出的是行内。渲染器据此选标签——块级是 `<div>`，
+    /// 行内是 `<span>`。这个信息没法从父节点推出来（父节点可能已经被换成别的
+    /// 东西了），所以跟 [`NaturalBlock::inline`](crate::ast::NaturalBlock) 一样
+    /// 记在数据上。
+    pub inline: bool,
 }
 
 impl ErrorNode {
@@ -31,7 +39,14 @@ impl ErrorNode {
             message: message.into(),
             span,
             content: content.into(),
+            inline: false,
         }
+    }
+
+    /// 标记这个报错落在**行内**位置。
+    pub fn at_inline(mut self) -> Self {
+        self.inline = true;
+        self
     }
 }
 

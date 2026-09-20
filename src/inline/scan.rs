@@ -101,15 +101,11 @@ pub(crate) fn scan(text: &str, options: Options) -> Vec<Piece> {
                 }
             },
 
-            // 行内调用的糖形态：`:name:`
-            ':' if options.calls => match parse_bare_call(&chars, i) {
+            // 行内图标：`:name:`
+            ':' if options.icons => match parse_bare_call(&chars, i) {
                 Some((name, used)) => {
                     flush(&mut out, &mut literal, &mut smart);
-                    out.push(Piece::InlineCall {
-                        name,
-                        params: Params::new(),
-                        content: None,
-                    });
+                    out.push(Piece::Icon(name));
                     i += used;
                 }
                 None => {
@@ -280,10 +276,11 @@ fn is_fully_quoted(text: &str) -> bool {
     false
 }
 
-/// 识别行内调用的**糖形态** `:name:`。
+/// 识别**行内图标** `:name:`。
 ///
 /// 只认「小写字母 / 数字 / `_` `+` `-`」组成、两侧都有冒号、名字至少两个字符的
-/// 形式，所以正文里的 `12:30:45` 不会被误判。它等价于 `{{name}}`。
+/// 形式，所以正文里的 `12:30:45` 不会被误判。它**不是**行内调用的糖：图标由
+/// 渲染器查表显示，行内调用交给展开器。
 fn parse_bare_call(chars: &[char], start: usize) -> Option<(String, usize)> {
     if chars.get(start) != Some(&':') {
         return None;
@@ -433,6 +430,7 @@ mod tests {
             .iter()
             .map(|piece| match piece {
                 Piece::Text(text) => format!("T({text})"),
+                Piece::Icon(name) => format!("E({name})"),
                 Piece::Node { kind, children } => {
                     format!("[{} {}]", kind_name(kind), texts(children).join(""))
                 }
@@ -536,15 +534,15 @@ mod tests {
     }
 
     #[test]
-    fn the_sugar_form_is_an_inline_call_with_no_params() {
-        // 糖形态不在这里解析任何值——只带走名字。
-        assert_eq!(show("&amp; :smile:"), "T(& )I(smile)");
-        assert_eq!(show(":nope:"), "I(nope)");
-        assert_eq!(show(":+1:"), "I(+1)");
+    fn the_colon_form_is_an_icon_not_an_inline_call() {
+        // 图标只看形状、带走名字，不认识由渲染器查表决定。
+        assert_eq!(show("&amp; :smile:"), "T(& )E(smile)");
+        assert_eq!(show(":nope:"), "E(nope)");
+        assert_eq!(show(":+1:"), "E(+1)");
         // 形状不合法就落回字面
-        assert_eq!(show("12:30:45"), "T(12)I(30)T(45)");
-        // ↑ `:30:` 形状合法，所以确实是行内调用；渲染器不认识这个名字，
-        //   会原样回显成 `:30:`，于是输出仍是 12:30:45（与旧行为一致）。
+        assert_eq!(show("12:30:45"), "T(12)E(30)T(45)");
+        // ↑ `:30:` 形状合法，于是是个图标；渲染器表里没有它，回显成 `:30:`，
+        //   所以输出仍是 12:30:45。
         assert_eq!(show(":Smile:"), "T(:Smile:)");
     }
 

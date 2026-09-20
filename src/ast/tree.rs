@@ -86,6 +86,12 @@ pub enum NodeKind {
     Code,
     /// 行内数学；孩子是一个**原样**文本。
     Math,
+    /// **行内图标**（`:name:`）：只记名字，显示什么完全由渲染器查表决定。
+    ///
+    /// 与 [`NodeKind::InlineCall`] 分工不同：图标是**呈现**，不走展开器、没有
+    /// 参数，渲染器认不认识决定它是图标还是原样文字；行内调用是**逻辑**，交给
+    /// 展开器，没人认领就是错误。
+    Icon(String),
     /// 硬换行。
     LineBreak,
     /// 行内链接。孩子是链接文本，展开后是行内内容。
@@ -258,6 +264,14 @@ impl Ast {
         }
     }
 
+    /// 行内图标名。
+    pub fn icon(&self, id: NodeId) -> Option<&str> {
+        match self.arena.get_data(id)? {
+            NodeKind::Icon(name) => Some(name),
+            _ => None,
+        }
+    }
+
     /// 行内调用的名字、参数与位置。
     pub fn inline_call(&self, id: NodeId) -> Option<(&str, &Params, Span)> {
         match self.arena.get_data(id)? {
@@ -334,6 +348,11 @@ impl Ast {
             tag: tag.into(),
             attrs,
         })
+    }
+
+    /// 新建一个行内图标节点。
+    pub fn new_icon(&mut self, name: impl Into<String>) -> NodeId {
+        self.new_node(NodeKind::Icon(name.into()))
     }
 
     /// 新建一个行内调用节点。

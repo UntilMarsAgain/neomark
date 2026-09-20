@@ -32,7 +32,9 @@ pub struct Options {
     pub math: bool,
     /// 实体：`&amp;`。
     pub entities: bool,
-    /// 行内调用：`{{…}}` 与糖形态 `:name:`。
+    /// 行内图标：`:name:`。
+    pub icons: bool,
+    /// 行内调用：`{{…}}`。
     pub calls: bool,
     /// 链接：`[[文本 => 目标]]`。
     pub links: bool,
@@ -51,6 +53,7 @@ impl Default for Options {
             code_spans: true,
             math: true,
             entities: true,
+            icons: true,
             calls: true,
             links: true,
             emphasis: true,
@@ -68,6 +71,7 @@ impl Options {
             code_spans: false,
             math: false,
             entities: false,
+            icons: false,
             calls: false,
             links: false,
             emphasis: false,
@@ -82,6 +86,7 @@ impl Options {
             && !self.code_spans
             && !self.math
             && !self.entities
+            && !self.icons
             && !self.calls
             && !self.links
             && !self.emphasis

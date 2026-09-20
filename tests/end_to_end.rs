@@ -2,7 +2,9 @@
 //!
 //! 这里只用公共 API，模拟外部使用者。
 
-use neomark::{Context, Dispatcher, Matched, Registry, handlers, html, parse};
+use neomark::{
+    Ast, Context, Dispatcher, Handler, Matched, NodeId, Registry, handlers, html, parse,
+};
 use regex::Regex;
 
 fn render(source: &str) -> String {
@@ -37,6 +39,32 @@ fn render_page(source: &str, title: &str) -> String {
     Dispatcher::new(registry).run(&mut ast, &mut ctx);
 
     html::render_page(&ast, title)
+}
+
+/// 把调用名与参数原样写成一行文字，用来从 HTML 里观察解析结果。
+struct EchoSignature;
+
+impl Handler for EchoSignature {
+    fn expand_call(
+        &self,
+        node: NodeId,
+        ast: &mut Ast,
+        _ctx: &mut Context<'_>,
+        _matched: &Matched<'_>,
+    ) -> Vec<NodeId> {
+        let call = ast.call(node).unwrap();
+        let mut text = format!("[{}", call.name);
+        for (key, value) in call.params.iter() {
+            text.push_str(&format!(" {key}={value}"));
+        }
+        text.push(']');
+
+        let paragraph = ast.new_paragraph();
+        let text = ast.new_text(text);
+        ast.append(paragraph, text);
+
+        vec![paragraph]
+    }
 }
 
 #[test]
@@ -136,69 +164,71 @@ fn math_is_verbatim_so_its_markers_are_not_reinterpreted() {
 }
 
 #[test]
-fn entities_emoji_escapes_and_font_punctuation() {
+fn entities_icons_escapes_and_font_punctuation() {
     assert_eq!(
         render("&amp; &hellip; :rocket: \\*不斜\\* ..."),
-        "<p class=\"nm-p\">&amp; … <span class=\"nm-emoji\" data-alias=\"rocket\">🚀</span> *不斜* …</p>"
+        "<p class=\"nm-p\">&amp; … <span class=\"nm-icon\" data-alias=\"rocket\">🚀</span> *不斜* …</p>"
     );
 }
 
 #[test]
-fn emoji_lookup_happens_in_the_renderer_not_the_parser() {
-    // 解析层只带走名字：渲染器认识就查表，不认识就原样回显。
+fn icon_lookup_happens_in_the_renderer_not_the_parser() {
+    // 解析层只带走名字：渲染器表里有就显示图标，没有就原样回显。
     assert_eq!(
         render(":smile: 和 :nope:"),
         concat!(
             "<p class=\"nm-p\">",
-            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span> 和 :nope:",
+            "<span class=\"nm-icon\" data-alias=\"smile\">😄</span> 和 :nope:",
             "</p>"
         )
     );
 }
 
 #[test]
-fn the_sugar_form_and_the_braced_form_are_the_same_thing() {
+fn the_colon_form_and_the_braced_form_are_two_different_things() {
+    // `:smile:` 是**图标**：渲染器查表，显示成样子。
     assert_eq!(
-        render(":smile: 与 {{smile}}"),
-        concat!(
-            "<p class=\"nm-p\">",
-            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span> 与 ",
-            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>",
-            "</p>"
-        )
+        render(":smile:"),
+        "<p class=\"nm-p\"><span class=\"nm-icon\" data-alias=\"smile\">😄</span></p>"
     );
+
+    // `{{smile}}` 是**行内调用**：交给展开器，没人认领就是错误。
+    let html = render("{{smile}}");
+    assert!(html.contains("nm-error-inline"), "{html}");
+    assert!(html.contains("没有展开器能处理行内调用 {smile}"), "{html}");
 }
 
 #[test]
-fn an_unknown_inline_call_is_echoed_with_its_content_still_rendered() {
-    // 没有展开器的名字由渲染器原样回显；内容照常渲染，所以什么都不吞。
-    assert_eq!(
-        render("{{quote author=张三: **引用**}}"),
-        "<p class=\"nm-p\">{{quote author=张三: <strong class=\"nm-strong\">引用</strong>}}</p>"
+fn an_unknown_inline_call_becomes_an_inline_error_not_a_block() {
+    // 行内调用与块调用一样，没人认领就是错误；但报错落在**行内**位置，
+    // 所以必须渲染成 <span>——否则会塞进 <p> 里，成为非法 HTML。
+    let html = render("看 {{quote}} 这里");
+
+    assert!(
+        html.contains("<span class=\"nm-error-inline nm-error-no-handler\""),
+        "{html}"
     );
+    assert!(!html.contains("<div class=\"nm-error"), "{html}");
+    assert!(html.contains("没有展开器能处理行内调用 {quote}"), "{html}");
 }
 
 #[test]
 fn a_braced_inline_call_does_not_swallow_the_rest_of_the_line() {
-    // 这正是选 `{{ }}` 而不是 `:` 的理由：闭合符是独立记号。
-    assert_eq!(
-        render("看 {{smile}} 这里"),
-        concat!(
-            "<p class=\"nm-p\">看 ",
-            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>",
-            " 这里</p>"
-        )
-    );
+    // 这正是选 `{{ }}` 的理由：闭合符是独立记号，同一行后面的正文还在。
+    let html = render("看 {{quote}} 这里");
+
+    assert!(html.starts_with("<p class=\"nm-p\">看 "), "{html}");
+    assert!(html.ends_with(" 这里</p>"), "{html}");
 }
 
 #[test]
-fn quoted_keys_and_values_survive_a_round_trip() {
-    // 无展开器的行内调用会按**解析出来的**参数重新回显，所以这一条同时验证了
-    // 解析与回显两侧：含空格的键和值都必须重新套上引号。
-    assert_eq!(
-        render("{{a \"k 1\"=\"v 1\" plain}}"),
-        "<p class=\"nm-p\">{{a \"k 1\"=\"v 1\" plain=true}}</p>"
-    );
+fn quoting_survives_all_the_way_to_the_expander() {
+    // 四处引号规则在**解析结果**上对不对，由展开器读到的东西说了算。
+    let html = render_with("::echo \"k 1\"=\"v 1\" \"k:2\"=\"v:2\"", |registry| {
+        registry.register("echo", EchoSignature);
+    });
+
+    assert_eq!(html, "<p class=\"nm-p\">[echo k 1=v 1 k:2=v:2]</p>");
 }
 
 #[test]
@@ -256,12 +286,12 @@ fn a_lone_dollar_sign_is_written_with_two_dollars() {
 
 #[test]
 fn names_keys_and_values_may_all_be_quoted() {
-    // 名字、键、值、链接目标四处共用同一套引号规则。这里用无展开器的行内调用
-    // 回显来观察解析结果：回显会按解析出来的东西重新补引号。
-    assert_eq!(
-        render("{{\"my name\" \"k 1\"=\"v 1\"}}"),
-        "<p class=\"nm-p\">{{\"my name\" \"k 1\"=\"v 1\"}}</p>"
-    );
+    // 名字、键、值、链接目标四处共用同一套引号规则（这里看名字与键）。
+    let html = render_with("::\"my name\" \"k 1\"=v", |registry| {
+        registry.register("my name", EchoSignature);
+    });
+
+    assert_eq!(html, "<p class=\"nm-p\">[my name k 1=v]</p>");
 }
 
 #[test]
@@ -304,7 +334,7 @@ fn a_wrapper_registration_puts_the_body_inside_an_element() {
 #[test]
 fn a_wrapper_can_derive_a_class_from_the_call_name() {
     let html = render_with("::note-warning: 小心", |registry| {
-        registry.register_pattern(
+        registry.register(
             Regex::new("^note-").unwrap(),
             handlers::Wrap::tag("aside").class("note").class_from_name(),
         );
@@ -334,7 +364,7 @@ fn a_wrapper_can_read_capture_groups() {
     // 捕获组也是能拿到的：`::badge-new` 的样式由 `(?P<kind>…)` 决定，
     // 它匹配到的是 `new`（不是整名 `badge-new`）。
     let html = render_with("::badge-new: 新", |registry| {
-        registry.register_pattern(
+        registry.register(
             Regex::new("^badge-(?P<kind>[a-z]+)$").unwrap(),
             handlers::Wrap::tag("span")
                 .class("badge")
@@ -351,7 +381,7 @@ fn an_unanchored_pattern_can_tell_what_actually_matched() {
     // 模式只锚了中间：`h[1-6]` 会命中 `xh3y`，此时**整名**（xh3y）与
     // **实际匹配到的片段**（h3）不是一回事。
     let html = render_with("::xh3y: 正文", |registry| {
-        registry.register_pattern(
+        registry.register(
             Regex::new("h[1-6]").unwrap(),
             handlers::Wrap::tag_from(|m: &Matched| m.matched().to_string())
                 .inline(handlers::NaturalExpander::default()),
@@ -373,7 +403,7 @@ fn headings_really_are_just_a_wrapper_now() {
 fn a_wrapper_can_use_several_capture_groups_at_once() {
     // 多个捕获组：按名字各取一个，拼成一个类名；缺的用兜底值补齐。
     let html = render_with("::figure-chart-v2: 正文", |registry| {
-        registry.register_pattern(
+        registry.register(
             Regex::new(r"^figure-(?P<kind>\w+)-v(?P<version>\d+)$").unwrap(),
             handlers::Wrap::tag("figure")
                 .class("figure")
@@ -396,7 +426,7 @@ fn the_common_derivations_need_no_closure_at_all() {
     // `tag_from_match` + `class_prefix` + `class_from_match` 覆盖了「标签与类名
     // 都取自匹配片段」这个最常见的情形，不用写闭包、也不用标类型。
     let html = render_with("::h2: 标题", |registry| {
-        registry.register_pattern(
+        registry.register(
             Regex::new("^h[1-6]$").unwrap(),
             handlers::Wrap::tag_from_match()
                 .class_prefix("nm-")

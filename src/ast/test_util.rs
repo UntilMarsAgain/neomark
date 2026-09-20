@@ -36,6 +36,7 @@ fn head(ast: &Ast, id: NodeId) -> String {
             }
             out
         }
+        Some(NodeKind::Icon(name)) => format!("icon {name}"),
         Some(NodeKind::InlineCall { name, params, .. }) => {
             let mut out = format!("inline-call {name}");
             for (key, value) in params.iter() {
@@ -80,6 +81,7 @@ pub(crate) fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Unparsed(_) => "unparsed",
         NodeKind::Paragraph => "paragraph",
         NodeKind::Heading { .. } => "heading",
+        NodeKind::Icon(_) => "icon",
         NodeKind::InlineCall { .. } => "inline-call",
         NodeKind::Instance { .. } => "instance",
         NodeKind::Element { .. } => "element",

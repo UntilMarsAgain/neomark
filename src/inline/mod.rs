@@ -10,8 +10,8 @@
 //! | 代码跨度 | `` `code` ``、`` ``a`b`` `` | [`NodeKind::Code`] + 原样文本 |
 //! | 数学 | `$x$`、`$$a$b$$` | [`NodeKind::Math`] + 原样文本 |
 //! | 实体 | `&amp;` `&#35;` | 对应字符 |
-//! | 行内调用 · 糖形态 | `:smile:` | [`NodeKind::InlineCall`]，等价于 `{{smile}}` |
-//! | 行内调用 · 全形 | `{{name k=v: 内容}}` | [`NodeKind::InlineCall`] + 未解析的内容块 |
+//! | 行内图标 | `:smile:` | [`NodeKind::Icon`]，**只有名字**，渲染器查表 |
+//! | 行内调用 | `{{name k=v: 内容}}` | [`NodeKind::InlineCall`] + 未解析的内容块 |
 //! | 链接 | `[[文本 => 目标]]` | [`NodeKind::Link`] + 未解析的文本块 |
 //! | 强调 / 加粗 | `*x*` / `**x**` | [`NodeKind::Emphasis`] / [`NodeKind::Strong`] |
 //! | 删除线 | `~~x~~` | [`NodeKind::Strikethrough`] |
@@ -21,6 +21,9 @@
 //!
 //! **这里一个 HTML 字符串都没有。** 标签、类名、`\(...\)` 包装、emoji 到底
 //! 长什么样，全是 [`crate::html`] 的决定。
+//!
+//! [`NodeKind::Icon`] 与 [`NodeKind::InlineCall`] 的分工：前者是呈现（不进调度器），
+//! 后者是逻辑（交给展开器，没人认领即报错）。
 //!
 //! # 行内调用与块调用共用同一套头部语法
 //!
@@ -69,6 +72,8 @@ pub(crate) enum Piece {
         kind: NodeKind,
         children: Vec<Piece>,
     },
+    /// 行内图标（`:name:`）：只有名字，渲染器查表决定显示什么。
+    Icon(String),
     /// 行内调用：名字 + 参数 + 可选的**首行内容**。
     ///
     /// 参数保持字符串；**要不要对某个参数值做行内解析，由展开器自己决定**
@@ -115,6 +120,7 @@ fn lower_one(ast: &mut Ast, piece: Piece, span: Span) -> NodeId {
     match piece {
         Piece::Text(text) => ast.new_text(text),
         Piece::LineBreak => ast.new_line_break(),
+        Piece::Icon(name) => ast.new_icon(name),
         Piece::InlineCall {
             name,
             params,
@@ -232,33 +238,29 @@ mod tests {
     }
 
     #[test]
-    fn entities_are_resolved_but_inline_call_names_are_not() {
+    fn entities_are_resolved_but_icon_names_are_not() {
         assert_eq!(html("&amp;"), "&amp;");
         assert_eq!(html("&#35;"), "#");
         assert_eq!(html("&hellip;"), "…");
-        // 名字只带走，长什么样是渲染器查出来的
+        // 名字只带走，长什么样是渲染器查表决定的
         assert_eq!(
             html(":smile:"),
-            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>"
+            "<span class=\"nm-icon\" data-alias=\"smile\">😄</span>"
         );
-        // 糖形态与全形在这里合流
-        assert_eq!(
-            html("{{smile}}"),
-            "<span class=\"nm-emoji\" data-alias=\"smile\">😄</span>"
-        );
-        // 渲染器不认识的名字，原样回显
+        // 表里没有的名字，原样回显
         assert_eq!(html(":nope:"), ":nope:");
         assert_eq!(html("12:30:45"), "12:30:45");
     }
 
     #[test]
-    fn a_braced_inline_call_carries_params_and_content() {
-        // 内容走既有的展开管线，所以行内标记照常生效；
-        // 没有展开器的名字由渲染器原样回显，但内容不会被吞掉。
+    fn an_inline_call_and_an_icon_are_two_different_things() {
+        // 图标是呈现：渲染器查表，认不认识决定显示成样子还是原样文字。
         assert_eq!(
-            html("{{quote author=张三: **粗体**}}"),
-            "{{quote author=张三: <strong class=\"nm-strong\">粗体</strong>}}"
+            html(":rocket:"),
+            "<span class=\"nm-icon\" data-alias=\"rocket\">🚀</span>"
         );
+        // 行内调用是逻辑：同样是 rocket，没人认领就是错误。
+        assert!(html("{{rocket}}").contains("没有展开器能处理行内调用 {rocket}"));
     }
 
     #[test]

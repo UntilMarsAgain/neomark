@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use regex::Regex;
 
 use super::handler::{Fallback, Handler};
+use super::key::Key;
 
 /// 一次按名查找的结果：展开器 + [命中信息](crate::dispatch::Matched)。
 ///
@@ -69,49 +70,39 @@ impl Registry {
         Self::default()
     }
 
-    /// 注册（或覆盖）一个**调用名**的展开器。
-    pub fn register(
-        &mut self,
-        name: impl Into<String>,
-        handler: impl Handler + 'static,
-    ) -> &mut Self {
-        self.handlers.insert(name.into(), Box::new(handler));
-        self
-    }
-
-    /// 注册一个**正则模式**的展开器。
+    /// 注册（或覆盖）一个展开器：**键写什么就怎么匹配**。
     ///
-    /// 见[类型文档](Registry#正则模式)。同一个模式重复注册会覆盖旧的；不同模式
-    /// 之间**后注册的优先**。
+    /// * `&str` / `String` → 精确调用名（查表，优先级最高）；
+    /// * `Regex` → 正则模式（逐条试，后注册的优先）。
+    ///
+    /// 见 [`Key`]。同一个键重复注册会覆盖旧的。
     ///
     /// ```
-    /// use neomark::{Registry, handlers};
-    /// use regex::Regex;
-    ///
-    /// // 一条模式覆盖 h1 ~ h6，标签与类名都由命中信息算出来
-    /// let headings = handlers::Wrap::tag_from(|m: &neomark::Matched| m.matched().to_string())
-    ///     .class_from(|m: &neomark::Matched| format!("nm-{}", m.matched()));
+    /// use neomark::{Registry, handlers, regex::Regex};
     ///
     /// let mut registry = Registry::new();
-    /// registry.register_pattern(Regex::new("^h[1-6]$").unwrap(), headings);
+    ///
+    /// registry.register("notice", handlers::Wrap::tag("div").class("nm-notice"));
+    /// registry.register(
+    ///     Regex::new("^h[1-6]$").unwrap(),
+    ///     handlers::Wrap::tag_from_match().class_from_match(),
+    /// );
     /// ```
-    pub fn register_pattern(
-        &mut self,
-        pattern: Regex,
-        handler: impl Handler + 'static,
-    ) -> &mut Self {
+    pub fn register(&mut self, key: impl Into<Key>, handler: impl Handler + 'static) -> &mut Self {
         let handler = Box::new(handler);
 
-        match self
-            .patterns
-            .iter_mut()
-            .find(|entry| entry.regex.as_str() == pattern.as_str())
-        {
-            Some(entry) => entry.handler = handler,
-            None => self.patterns.push(Pattern {
-                regex: pattern,
-                handler,
-            }),
+        match key.into() {
+            Key::Name(name) => {
+                self.handlers.insert(name, handler);
+            }
+            Key::Pattern(regex) => match self
+                .patterns
+                .iter_mut()
+                .find(|entry| entry.regex.as_str() == regex.as_str())
+            {
+                Some(entry) => entry.handler = handler,
+                None => self.patterns.push(Pattern { regex, handler }),
+            },
         }
 
         self

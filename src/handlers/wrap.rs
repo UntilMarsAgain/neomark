@@ -26,7 +26,7 @@ type Derive = Box<dyn Fn(&Matched<'_>) -> String>;
 /// registry.register("notice", Wrap::tag("div").class("nm-notice"));
 ///
 /// // 算出来：`::h3` → <h3 class="nm-h3">正文</h3>
-/// registry.register_pattern(
+/// registry.register(
 ///     Regex::new("^h[1-6]$").unwrap(),
 ///     Wrap::tag_from(|m: &Matched| m.matched().to_string())
 ///         .class_from(|m: &Matched| format!("nm-{}", m.matched())),

@@ -6,7 +6,7 @@
 //! 这一层只依赖 [`crate::ast`]，单向读取，不改树。
 
 mod document;
-mod emoji;
+mod icon;
 mod render;
 
 pub use document::{DEFAULT_CSS, render_page};

@@ -19,10 +19,15 @@
 //!
 //! 注册表按调用名查找，支持三种注册方式：
 //!
-//! * [`Registry::register`]：精确名，优先级最高；
-//! * [`Registry::register_pattern`]：**正则模式**，所以 `::h1` ~ `::h6` 用一条
-//!   `^h[1-6]$` 就够——后注册的模式优先；
-//! * [`Registry::register_natural`]：自然块槽位。
+//! * [`Registry::register`] 配 [`Key::Name`]（`&str` / `String` 直接传即可）：
+//!   精确名，查表命中，优先级最高；
+//! * [`Registry::register`] 配 [`Key::Pattern`]：**正则模式**，所以
+//!   `::h1` ~ `::h6` 用一条 `^h[1-6]$` 就够——后注册的模式优先；
+//! * [`Registry::register_natural`]：自然块槽位（它不按名认领，所以不并入
+//!   `register`）。
+//!
+//! 认领方式本身就是 [`Key`] 这个类型，将来要加新方式（优先级、谓词……）是加
+//! 枚举分支，不必再加 `register_xxx` 方法。
 //!
 //! 都没命中时用兜底展开器（默认产出报错节点）。
 //!
@@ -98,7 +103,7 @@ pub use ast::{
     Ast, Attr, Block, CallBlock, ErrorKind, ErrorNode, KindTag, NaturalBlock, NodeId, NodeKind,
     Params, Span,
 };
-pub use dispatch::{Context, Dispatcher, Fallback, Found, Handler, Matched, Registry};
+pub use dispatch::{Context, Dispatcher, Fallback, Found, Handler, Key, Matched, Registry};
 pub use handlers::{NaturalExpander, Wrap};
 pub use inline::Options;
 pub use parse::{CallHeader, parse, parse_call_header};

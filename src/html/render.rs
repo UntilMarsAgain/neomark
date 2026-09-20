@@ -18,7 +18,7 @@
 
 use crate::ast::{Ast, Attr, Block, ErrorNode, NodeId, NodeKind, Params};
 
-use super::emoji;
+use super::icon;
 
 /// 把整棵树渲染成 HTML 片段（**不含** `<html>` / `<body>` 外壳）。
 pub fn render(ast: &Ast) -> String {
@@ -59,6 +59,7 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
         Some(NodeKind::Mark) => container(ast, id, "mark", "nm-mark", out),
         Some(NodeKind::Code) => container(ast, id, "code", "nm-code-inline", out),
         Some(NodeKind::Math) => write_math(ast, id, out),
+        Some(NodeKind::Icon(name)) => write_icon(name, out),
         Some(NodeKind::InlineCall { name, params, .. }) => {
             write_inline_call(ast, id, name, params, out)
         }
@@ -179,40 +180,33 @@ fn write_math(ast: &Ast, id: NodeId, out: &mut String) {
     out.push_str("\\)</span>");
 }
 
-/// 行内调用。
+/// 行内图标：查 [`icon`] 表决定显示什么，认不出就把 `:name:` 原样回显。
 ///
-/// 这是渲染器**按名字解释**的地方，和 [`crate::ast::NodeKind::Instance`] 同一个
-/// 思路：
-///
-/// * 名字在 [`emoji`] 表里 → 渲染成图标。`{{smile}}` 与 `:smile:` 在这里合流。
-/// * 名字不认识 → 把调用按**规范形式**原样回显（`{{name k=v: 内容}}`，或
-///   无参数无内容时的 `:name:`）。内容仍照常渲染，所以什么都不吞。
-///
-/// 想让某个名字接上真正的展开逻辑（比如 `{{quote: …}}` 要包一层结构），
-/// 就在 [`crate::dispatch`] 里注册同名展开器——**有的名字归展开器，没的归
-/// 渲染器**。
-fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut String) {
-    if let Some(value) = emoji::value(name) {
-        out.push_str("<span class=\"nm-emoji\" data-alias=\"");
-        escape_attr(name, out);
-        out.push_str("\">");
-        escape_text(value, out);
-        for child in ast.children(id).collect::<Vec<_>>() {
-            write_node(ast, child, out);
+/// 图标**不经过调度器**——它是呈现，不是逻辑。想让它变成别的样子就改表。
+fn write_icon(name: &str, out: &mut String) {
+    match icon::value(name) {
+        Some(value) => {
+            out.push_str("<span class=\"nm-icon\" data-alias=\"");
+            escape_attr(name, out);
+            out.push_str("\">");
+            escape_text(value, out);
+            out.push_str("</span>");
         }
-        out.push_str("</span>");
-        return;
+        None => {
+            out.push(':');
+            escape_text(name, out);
+            out.push(':');
+        }
     }
+}
 
+/// 行内调用：按**规范形式**原样回显成 `{{name k=v: 内容}}`。
+///
+/// 正常情况下渲染器**看不到**这个节点：行内调用要么被展开器认领，要么由调度器
+/// 交给兜底展开器变成报错节点。只有把**未经调度**的 AST 直接交给
+/// [`render`] 时才会走到这里，所以这里取「不吞信息」的稳妥做法。
+fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut String) {
     let children: Vec<NodeId> = ast.children(id).collect();
-
-    // 糖形态回显成糖形态。
-    if params.is_empty() && children.is_empty() {
-        out.push(':');
-        escape_text(name, out);
-        out.push(':');
-        return;
-    }
 
     let mut header = String::from("{{");
     // 名字也走同一条回显规则：名字现在同样可以用引号包裹。
@@ -299,12 +293,30 @@ fn write_instance(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut 
 }
 
 fn write_error(error: &ErrorNode, out: &mut String) {
+    if error.inline {
+        return write_inline_error(error, out);
+    }
+
     write_error_box(
         error.kind.as_str(),
         &error.message,
         Some(&error.content),
         out,
     );
+}
+
+/// 行内位置的报错：**不能**用 `<div>` 与 `<pre>`——它会落在 `<p>` 里面，
+/// 那样是非法 HTML。所以只输出一行 `<span>`，原文靠 `title` 兜着。
+fn write_inline_error(error: &ErrorNode, out: &mut String) {
+    out.push_str("<span class=\"nm-error-inline nm-error-");
+    out.push_str(error.kind.as_str());
+    out.push_str("\" data-kind=\"");
+    escape_attr(error.kind.as_str(), out);
+    out.push_str("\" title=\"");
+    escape_attr(&error.message, out);
+    out.push_str("\">");
+    escape_text(&error.message, out);
+    out.push_str("</span>");
 }
 
 fn write_unparsed(block: &Block, out: &mut String) {
@@ -443,24 +455,35 @@ mod tests {
     }
 
     #[test]
-    fn known_inline_call_names_are_looked_up_here() {
+    fn icon_names_are_looked_up_in_the_table_here() {
         let mut ast = Ast::new();
-        let id = ast.new_inline_call("rocket", Params::new(), Span::new(1, 1, 0, 0));
+        let id = ast.new_icon("rocket");
         ast.push_block(id);
 
         assert_eq!(
             render(&ast),
-            "<span class=\"nm-emoji\" data-alias=\"rocket\">🚀</span>"
+            "<span class=\"nm-icon\" data-alias=\"rocket\">🚀</span>"
         );
     }
 
     #[test]
-    fn unknown_inline_call_names_are_echoed_in_canonical_form() {
+    fn unknown_icon_names_are_echoed_verbatim() {
+        let mut ast = Ast::new();
+        let id = ast.new_icon("nope");
+        ast.push_block(id);
+
+        assert_eq!(render(&ast), ":nope:");
+    }
+
+    #[test]
+    fn an_undispatched_inline_call_is_echoed_in_canonical_form() {
+        // 正常流程里渲染器看不到行内调用（展开器认领或兜底报错）；只有把未经
+        // 调度的 AST 直接渲染时才会走到这里，此时取「不吞信息」的做法。
         let mut ast = Ast::new();
         let id = ast.new_inline_call("nope", Params::new(), Span::new(1, 1, 0, 0));
         ast.push_block(id);
 
-        assert_eq!(render(&ast), ":nope:");
+        assert_eq!(render(&ast), "{{nope}}");
     }
 
     #[test]
