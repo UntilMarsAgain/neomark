@@ -77,11 +77,12 @@ mod tests {
     }
 
     #[test]
-    fn padded_boxes_clear_their_childrens_edge_margins() {
-        // `.nm-p` 自带 1.1em 下外边距。带 padding 的框如果不清掉首尾子元素的
-        // 外边距，句末就会空出一大截（外边距没法穿透 padding 折叠出去）。
-        assert!(DEFAULT_CSS.contains(".nm-quote > :last-child"));
-        assert!(DEFAULT_CSS.contains(".nm-quote > :first-child"));
+    fn padded_boxes_control_their_own_inner_spacing() {
+        // `.nm-p` 自带 1.1em 下外边距。带 padding 的框如果只清首尾子元素，
+        // 一旦末尾多出别的孩子（比如引文的出处），那个下外边距就会漏出来，
+        // 还会和下一个兄弟的上外边距折叠成较大者。所以框必须自己接管框内间距。
+        assert!(DEFAULT_CSS.contains(".nm-quote > * + *"));
+        assert!(DEFAULT_CSS.contains(".nm-quote > .nm-quote-origin"));
         assert!(DEFAULT_CSS.contains(".nm-document > :first-child"));
     }
 
