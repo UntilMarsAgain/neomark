@@ -170,6 +170,54 @@ pub(crate) fn unquote_str(text: &str) -> String {
     unquote(&text.chars().collect::<Vec<_>>())
 }
 
+/// 把一个名字、键或值写回调用语法。
+///
+/// 含空白、引号、反斜杠、`:`、`=`（或者为空）时套上双引号并转义——这几个字符都
+/// 会影响重新解析的结果，所以必须包住。这是 [`unquote`] 的反面，两者放在一起，
+/// **引号规则就只有一套**，解析与回显不会各自漂移。
+pub(crate) fn quote_token(token: &str, out: &mut String) {
+    let needs_quotes = token.is_empty()
+        || token
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | ':' | '='));
+
+    if !needs_quotes {
+        out.push_str(token);
+        return;
+    }
+
+    out.push('"');
+    for ch in token.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+}
+
+/// 把调用头部重新写成**规范形式**：`name k=v flag`，不含 `::` 也不含 `{{}}`。
+///
+/// 与 [`parse_call_header`] 互逆：解析时用掉的引号规则，这里原样补回来，所以结果
+/// 能再解析回同样的名字与参数。给诊断信息与「无展开器时原样回显」用。
+pub fn format_call_header(name: &str, params: &Params) -> String {
+    let mut out = String::new();
+    quote_token(name, &mut out);
+
+    for (key, value) in params.iter() {
+        out.push(' ');
+        quote_token(key, &mut out);
+        out.push('=');
+        quote_token(value, &mut out);
+    }
+
+    out
+}
+
 /// 去掉包裹的双引号并处理 `\"` 转义；未闭合的引号按「到行尾为止」宽容处理。
 ///
 /// **未被引号包裹时原样返回**，所以对任何 token 都能无脑调用。名字、键、值、
@@ -419,6 +467,35 @@ mod tests {
         // 名字里的引号可以转义
         let header = parse_call_header("::\"a\\\"b\"");
         assert_eq!(header.name, "a\"b");
+    }
+
+    #[test]
+    fn the_separator_is_the_first_colon_that_is_neither_quoted_nor_followed_by_a_non_space() {
+        // 引号保护：引号里的冒号不算分隔符，它属于值
+        let header = parse_call_header("::a \"b:c\"=1: 内容");
+        assert_eq!(header.params.get("b:c"), Some("1"));
+        assert_eq!(header.content.as_deref(), Some("内容"));
+
+        // 后面紧跟非空白的冒号也不算：所以值里的 URL 冒号安然无恙
+        let header = parse_call_header("::a b=http://x: 内容");
+        assert_eq!(header.params.get("b"), Some("http://x"));
+        assert_eq!(header.content.as_deref(), Some("内容"));
+
+        // 行尾的冒号算分隔符，只是内容为空
+        let header = parse_call_header("::a b=1:");
+        assert_eq!(header.params.get("b"), Some("1"));
+        assert_eq!(header.content, None);
+    }
+
+    #[test]
+    fn outside_quotes_a_backslash_is_a_literal_character() {
+        // 引号之外**没有**转义机制：反斜杠就是反斜杠，所以 Windows 路径能原样存下
+        let header = parse_call_header("::a path=C:\\Users\\x");
+        assert_eq!(header.params.get("path"), Some("C:\\Users\\x"));
+
+        // 需要保护带空白的冒号，就整体加引号
+        let header = parse_call_header("::a p=\"a: b\"");
+        assert_eq!(header.params.get("p"), Some("a: b"));
     }
 
     #[test]

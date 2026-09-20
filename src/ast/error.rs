@@ -14,7 +14,11 @@ pub struct ErrorNode {
     pub message: String,
     /// 出错块在原文中的位置。
     pub span: Span,
-    /// 未能展开的块在原文中的完整文本（含头部行、含原始缩进）。
+    /// 出错处的文本，供渲染器原样回显。
+    ///
+    /// * **块级**：未能展开的块在原文中的完整文本（含头部行、含原始缩进）；
+    /// * **行内**：那段调用的**规范形式**（行内层没有列偏移，只能重建，
+    ///   见 [`format_call_header`](crate::format_call_header)）。
     pub content: String,
     /// 这个报错落在**行内**位置还是**块级**位置。
     ///

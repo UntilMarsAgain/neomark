@@ -208,15 +208,10 @@ fn write_icon(name: &str, out: &mut String) {
 fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut String) {
     let children: Vec<NodeId> = ast.children(id).collect();
 
-    let mut header = String::from("{{");
-    // 名字也走同一条回显规则：名字现在同样可以用引号包裹。
-    push_header_token(name, &mut header);
-    for (key, value) in params.iter() {
-        header.push(' ');
-        push_header_token(key, &mut header);
-        header.push('=');
-        push_header_token(value, &mut header);
-    }
+    // 规范回显由**解析层**提供：引号规则与 `parse_call_header` 同一套，
+    // 所以这里写出来的东西能原样再解析回去。
+    let header = crate::parse::format_call_header(name, params);
+    out.push_str("{{");
     escape_text(&header, out);
 
     if !children.is_empty() {
@@ -227,36 +222,6 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
     }
 
     out.push_str("}}");
-}
-
-/// 把一个名字、键或值写回调用语法。
-///
-/// 含空白、引号、反斜杠、`:`、`=`（或者为空）时套上双引号并转义——这几个字符
-/// 都会影响重新解析的结果，所以必须包住，**回显出来的东西要能再解析回同样的
-/// 名字与键值**。
-fn push_header_token(token: &str, out: &mut String) {
-    let needs_quotes = token.is_empty()
-        || token
-            .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | ':' | '='));
-
-    if !needs_quotes {
-        out.push_str(token);
-        return;
-    }
-
-    out.push('"');
-    for ch in token.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            _ => out.push(ch),
-        }
-    }
-    out.push('"');
 }
 
 /// 模板实例的**默认**映射。
@@ -315,7 +280,15 @@ fn write_inline_error(error: &ErrorNode, out: &mut String) {
     out.push_str("\" title=\"");
     escape_attr(&error.message, out);
     out.push_str("\">");
-    escape_text(&error.message, out);
+
+    // 显示**出错的那段调用原文**（规范形式）；没有承载文本时才退回说明。
+    // 于是正文读起来是「看 {{quote}} 这一句还在。」——错误被标出来，句子还在。
+    if error.content.is_empty() {
+        escape_text(&error.message, out);
+    } else {
+        escape_text(&error.content, out);
+    }
+
     out.push_str("</span>");
 }
 

@@ -144,14 +144,15 @@ body {
   color: var(--nm-error-fg);
 }
 
-/* 行内位置的报错：只占一行，不能带块级的边距与内边距。 */
+/* 行内位置的报错：**不能是「块」**。所以不画框、不加内边距，
+   改用波浪下划线标出，详细说明放 title，正文读起来仍然连贯。 */
 .nm-error-inline {
-  padding: 0.05em 0.4em;
-  border: 1px solid var(--nm-error-border);
-  border-radius: 3px;
-  background: var(--nm-error-bg);
-  color: var(--nm-error-fg);
-  font-size: 0.92em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.94em;
+  text-decoration: underline wavy var(--nm-error-border);
+  text-underline-offset: 0.2em;
+  cursor: help;
 }
 
 .nm-error-message {

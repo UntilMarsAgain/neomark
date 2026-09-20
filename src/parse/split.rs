@@ -389,6 +389,17 @@ mod tests {
     }
 
     #[test]
+    fn first_line_content_pins_the_common_indent_to_zero() {
+        // 没有首行内容：块体的公共缩进（2）被去掉
+        let ast = parse("::a:\n  一\n  二");
+        assert_eq!(sexpr(&ast), r#"(call a natural("一\n二"))"#);
+
+        // 有首行内容：首行缩进视为 0，于是公共缩进是 0，续行**原样保留**
+        let ast = parse("::a: 一\n  二");
+        assert_eq!(sexpr(&ast), r#"(call a natural("一\n  二"))"#);
+    }
+
+    #[test]
     fn nesting_still_works_when_the_outer_block_has_a_first_line() {
         let ast = parse("::outer: 首行\n  ::inner:\n    x");
         assert_eq!(

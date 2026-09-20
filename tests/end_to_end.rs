@@ -209,7 +209,12 @@ fn an_unknown_inline_call_becomes_an_inline_error_not_a_block() {
         "{html}"
     );
     assert!(!html.contains("<div class=\"nm-error"), "{html}");
-    assert!(html.contains("没有展开器能处理行内调用 {quote}"), "{html}");
+    // 可见文本是**出错的那段调用**，说明放在 title 里
+    assert!(html.contains(">{{quote}}</span>"), "{html}");
+    assert!(
+        html.contains("title=\"没有展开器能处理行内调用 {quote}\""),
+        "{html}"
+    );
 }
 
 #[test]

@@ -134,13 +134,19 @@ pub trait Handler {
         &self,
         node: NodeId,
         ast: &mut Ast,
-        ctx: &mut Context<'_>,
+        _ctx: &mut Context<'_>,
         _matched: &Matched<'_>,
     ) -> Vec<NodeId> {
-        let Some((name, _, span)) = ast.inline_call(node) else {
+        let Some((name, params, span)) = ast.inline_call(node) else {
             return Vec::new();
         };
         let name = name.to_string();
+        // 行内没有精确列位置，`ctx.slice(span)` 会给出整个外块——太宽。所以这里用
+        // 规范形式**重建**这段调用（引号规则与解析层同一套），渲染器再把它当作
+        // 「出错的那段原文」显示出来。
+        let mut source = String::from("{{");
+        source.push_str(&crate::parse::format_call_header(&name, params));
+        source.push_str("}}");
 
         vec![
             ast.new_error(
@@ -148,7 +154,7 @@ pub trait Handler {
                     ErrorKind::NoHandler,
                     format!("没有展开器能处理行内调用 {{{name}}}"),
                     span,
-                    ctx.slice(span),
+                    source,
                 )
                 .at_inline(),
             ),

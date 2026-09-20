@@ -106,4 +106,4 @@ pub use ast::{
 pub use dispatch::{Context, Dispatcher, Fallback, Found, Handler, Key, Matched, Registry};
 pub use handlers::{NaturalExpander, Wrap};
 pub use inline::Options;
-pub use parse::{CallHeader, parse, parse_call_header};
+pub use parse::{CallHeader, format_call_header, parse, parse_call_header};
