@@ -61,6 +61,7 @@ mod tests {
             ".nm-h1",
             ".nm-h6",
             ".nm-quote",
+            ".nm-quote-origin",
             ".nm-code-block",
             ".nm-code-inline",
             ".nm-instance",

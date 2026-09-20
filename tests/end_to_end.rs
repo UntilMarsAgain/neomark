@@ -535,17 +535,19 @@ fn a_block_element_from_an_inline_call_breaks_the_paragraph() {
     );
 }
 #[test]
-fn a_quote_block_carries_its_origin() {
+fn a_quote_block_shows_its_origin_on_the_page() {
+    // 出处既进属性（给机器读），也进正文（给人读）——右对齐稍小号由 CSS 管。
     assert_eq!(
-        render("::quote origin=\"《哥德尔、艾舍尔、巴赫》\": 引文"),
+        render("::quote origin=马丁·路德·金: 我有一个梦想！"),
         concat!(
-            "<blockquote class=\"nm-quote\" data-origin=\"《哥德尔、艾舍尔、巴赫》\">",
-            "<p class=\"nm-p\">引文</p>",
+            "<blockquote class=\"nm-quote\" data-origin=\"马丁·路德·金\">",
+            "<p class=\"nm-p\">我有一个梦想！</p>",
+            "<footer class=\"nm-quote-origin\">——马丁·路德·金</footer>",
             "</blockquote>"
         )
     );
 
-    // 没有 origin 就不写那个属性——缺席与空是两件事
+    // 没有出处就两样都不出现——缺席与空是两回事，但都不产出空的一行
     assert_eq!(
         render("::quote: 引文"),
         "<blockquote class=\"nm-quote\"><p class=\"nm-p\">引文</p></blockquote>"
