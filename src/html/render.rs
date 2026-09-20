@@ -96,27 +96,123 @@ fn write_node(ast: &Ast, id: NodeId, inline: bool, out: &mut String) {
     }
 }
 
-/// 一个带 `nm-` 类名的普通元素。
 fn container(ast: &Ast, id: NodeId, tag: &str, class: &str, inner_inline: bool, out: &mut String) {
-    out.push('<');
-    out.push_str(tag);
-    out.push_str(" class=\"");
-    out.push_str(class);
-    out.push_str("\">");
+    let open = format!("<{tag} class=\"{class}\">");
+    let close = format!("</{tag}>");
 
-    for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, inner_inline, out);
+    if inner_inline {
+        write_inner_inline(ast, id, &open, &close, out);
+        return;
     }
 
-    out.push_str("</");
-    out.push_str(tag);
-    out.push('>');
+    out.push_str(&open);
+    for child in ast.children(id).collect::<Vec<_>>() {
+        write_node(ast, child, false, out);
+    }
+    out.push_str(&close);
 }
 
-/// 逃生口：把 AST 里已经写好的 HTML 元素原样输出。
+/// 这个节点**在行内上下文里**会不会渲染成块级标签。
 ///
-/// 标签名先做合法性校验——它不是用户输入，但展开器写错了也会产出坏 HTML。
-/// 校验不过时**只输出孩子**，这样至少不丢内容。
+/// 决定渲染时要不要打断当前行内容器。注意它与「节点是不是块级」不是一回事：
+/// [`NodeKind::Instance`] 在行内位置渲染成 `<span>`，所以**不**打断——行内调用
+/// 展开出的模板实例因此能安分地待在段落里，不用把段落拆开。
+fn renders_block(ast: &Ast, id: NodeId) -> bool {
+    match ast.kind(id) {
+        Some(NodeKind::Paragraph | NodeKind::Heading { .. }) => true,
+        Some(NodeKind::Element { tag, .. }) => is_block_tag(tag),
+        _ => false,
+    }
+}
+
+/// 常见的 HTML **块级**标签。
+///
+/// 只用来判断「要不要打断行内容器」。认不出来的一律当行内，于是行为退化成
+/// 「原样输出」，和没有这套机制时一样——不会因为漏了一个标签就改变输出。
+const BLOCK_TAGS: [&str; 33] = [
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "details",
+    "div",
+    "dl",
+    "dt",
+    "dd",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "summary",
+    "table",
+    "ul",
+    "tr",
+];
+
+fn is_block_tag(tag: &str) -> bool {
+    BLOCK_TAGS
+        .iter()
+        .any(|block| block.eq_ignore_ascii_case(tag))
+}
+
+/// 在**行内容器**里写孩子：遇到块级节点就**打断**当前标签。
+///
+/// `<p>前<div>…</div>后</p>`（非法）会被写成
+/// `<p>前</p><div>…</div><p>后</p>`（合法）。
+///
+/// 打断是**逐层**生效的：块级节点的孩子若是行内容器、里面又有块级节点，那一层
+/// 会照同样的规则再断一次，所以 `<p><div><p><div>…</div></p></div></p>` 这种
+/// 嵌套也能被拆成合法结构。
+///
+/// 开标签是**懒**写的：全被块级孩子占据时不会吐出一个空的 `<p></p>`；但孩子为
+/// 空的容器照样输出一对标签——空段落该是空段落。
+fn write_inner_inline(ast: &Ast, id: NodeId, open: &str, close: &str, out: &mut String) {
+    let children: Vec<NodeId> = ast.children(id).collect();
+
+    if children.is_empty() {
+        out.push_str(open);
+        out.push_str(close);
+        return;
+    }
+
+    let mut opened = false;
+
+    for child in children {
+        if renders_block(ast, child) {
+            if opened {
+                out.push_str(close);
+                opened = false;
+            }
+            write_node(ast, child, false, out);
+        } else {
+            if !opened {
+                out.push_str(open);
+                opened = true;
+            }
+            write_node(ast, child, true, out);
+        }
+    }
+
+    if opened {
+        out.push_str(close);
+    }
+}
 fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], inline: bool, out: &mut String) {
     if !is_valid_attr_name(tag) {
         for child in ast.children(id).collect::<Vec<_>>() {
@@ -125,23 +221,32 @@ fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], inline: bool,
         return;
     }
 
-    out.push('<');
-    out.push_str(tag);
-    write_attrs(attrs, out);
-    out.push('>');
+    let mut open = String::new();
+    open.push('<');
+    open.push_str(tag);
+    write_attrs(attrs, &mut open);
+    open.push('>');
 
+    // void 元素没有闭合标签，也没有孩子。
     if is_void(tag) {
+        out.push_str(&open);
         return;
     }
 
-    for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, inline, out);
-    }
-    out.push_str("</");
-    out.push_str(tag);
-    out.push('>');
-}
+    let close = format!("</{tag}>");
 
+    // 行内位置的元素，孩子也是行内上下文：块级孩子要打断它。
+    if inline {
+        write_inner_inline(ast, id, &open, &close, out);
+        return;
+    }
+
+    out.push_str(&open);
+    for child in ast.children(id).collect::<Vec<_>>() {
+        write_node(ast, child, false, out);
+    }
+    out.push_str(&close);
+}
 fn write_attrs(attrs: &[Attr], out: &mut String) {
     for attr in attrs {
         if !is_valid_attr_name(&attr.name) {
@@ -169,22 +274,15 @@ fn is_void(tag: &str) -> bool {
         .any(|void| void.eq_ignore_ascii_case(tag))
 }
 
-/// 行内链接。
-///
-/// 目标转义后写进 `href`。**目前不校验 scheme**——`javascript:` 这类目标
-/// 会照样写出去；要挡就在这里加一层白名单。
 fn write_link(ast: &Ast, id: NodeId, target: &str, out: &mut String) {
-    out.push_str("<a class=\"nm-link\" href=\"");
-    escape_attr(target, out);
-    out.push_str("\">");
+    let mut open = String::from("<a class=\"nm-link\" href=\"");
+    escape_attr(target, &mut open);
+    open.push_str("\">");
 
-    for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, true, out);
-    }
-
-    out.push_str("</a>");
+    // 链接文本里若混进块级节点（行内调用可以产出元素），链接会被打断成两段——
+    // 语义上略怪，但 `<a><div>` 是非法 HTML，两段 `<a>` 至少是合法的。
+    write_inner_inline(ast, id, &open, "</a>", out);
 }
-
 /// 行内数学。
 ///
 /// AST 里存的是原样内容；这里归一成 KaTeX / MathJax 默认认识的 `\(...\)`，
@@ -241,16 +339,6 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
     out.push_str("}}");
 }
 
-/// 模板实例的**默认**映射。
-///
-/// 目前还没有任何调用块展开器，所以先给一个通用形态：带类名的 `div`，
-/// 参数以 `data-*` 带出来，方便 CSS/JS 取用。将来 `::notice` 之类的映射
-/// 落地时，在这里按 `name` 分派即可。
-///
-/// 参数键来自调用头部（**用户输入**），所以先做名字合法性校验；`data-`
-/// 前缀也顺带把 `onclick` 这类名字中和成无害的属性。
-/// 模板实例：**按上下文选标签**。块级位置是 `<div>`，行内位置是 `<span>`——
-/// 行内调用展开出的实例落在 `<p>` 里面，用 `<div>` 就是非法 HTML。
 fn write_instance(
     ast: &Ast,
     id: NodeId,
@@ -261,34 +349,42 @@ fn write_instance(
 ) {
     let tag = if inline { "span" } else { "div" };
 
-    out.push('<');
-    out.push_str(tag);
-    out.push_str(" class=\"nm-instance nm-instance-");
-    escape_attr(name, out);
-    out.push_str("\" data-name=\"");
-    escape_attr(name, out);
-    out.push('"');
+    let mut open = String::new();
+    open.push('<');
+    open.push_str(tag);
+    open.push_str(" class=\"nm-instance nm-instance-");
+    escape_attr(name, &mut open);
+    open.push_str("\" data-name=\"");
+    escape_attr(name, &mut open);
+    open.push('"');
 
     for (key, value) in params.iter() {
         if !is_valid_attr_name(key) {
             continue;
         }
-        out.push_str(" data-");
-        out.push_str(key);
-        out.push_str("=\"");
-        escape_attr(value, out);
-        out.push('"');
+        open.push_str(" data-");
+        open.push_str(key);
+        open.push_str("=\"");
+        escape_attr(value, &mut open);
+        open.push('"');
     }
 
-    out.push('>');
+    open.push('>');
+    let close = format!("</{tag}>");
+
+    // 行内位置：标签是 `<span>`（类名与 data-* 不变），孩子仍是行内上下文，
+    // 所以块级孩子会打断这个 span 而不是把 `<p>` 弄坏。
+    if inline {
+        write_inner_inline(ast, id, &open, &close, out);
+        return;
+    }
+
+    out.push_str(&open);
     for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, inline, out);
+        write_node(ast, child, false, out);
     }
-    out.push_str("</");
-    out.push_str(tag);
-    out.push('>');
+    out.push_str(&close);
 }
-
 fn write_error(error: &ErrorNode, inline: bool, out: &mut String) {
     // 报错自己知道落在行内；此外，落在行内上下文里的报错一律按行内画，
     // 否则就会在 <p> 里塞一个 <div>。
@@ -462,6 +558,97 @@ mod tests {
         let html = render(&ast);
         assert!(html.starts_with("<div class=\"nm-error nm-error-expand-failed\""));
         assert!(html.contains("<p class=\"nm-error-message\">炸了</p>"));
+    }
+
+    #[test]
+    fn a_block_node_inside_a_paragraph_breaks_it_instead_of_nesting() {
+        // <p>前<div>…</div>后</p> 是非法 HTML，渲染时改写成三段。
+        let mut ast = Ast::new();
+        let paragraph = ast.new_paragraph();
+        ast.push_block(paragraph);
+
+        let before = ast.new_text("前");
+        ast.append(paragraph, before);
+
+        let div = ast.new_element("div", vec![Attr::new("class", "box")]);
+        ast.append(paragraph, div);
+        let inside = ast.new_text("深");
+        ast.append(div, inside);
+
+        let after = ast.new_text("后");
+        ast.append(paragraph, after);
+
+        assert_eq!(
+            render(&ast),
+            "<p class=\"nm-p\">前</p><div class=\"box\">深</div><p class=\"nm-p\">后</p>"
+        );
+    }
+
+    #[test]
+    fn breaking_happens_at_every_level() {
+        // 多层：<p><div><p><div>…</div></p></div></p> 每一层各自按同一条规则拆开。
+        let mut ast = Ast::new();
+
+        let outer_p = ast.new_paragraph();
+        ast.push_block(outer_p);
+        let outer_before = ast.new_text("外前");
+        ast.append(outer_p, outer_before);
+
+        let outer_div = ast.new_element("div", vec![Attr::new("class", "outer")]);
+        ast.append(outer_p, outer_div);
+
+        let inner_p = ast.new_paragraph();
+        ast.append(outer_div, inner_p);
+        let inner_before = ast.new_text("内前");
+        ast.append(inner_p, inner_before);
+
+        let inner_div = ast.new_element("div", vec![Attr::new("class", "inner")]);
+        ast.append(inner_p, inner_div);
+        let deepest = ast.new_text("最深");
+        ast.append(inner_div, deepest);
+
+        let inner_after = ast.new_text("内后");
+        ast.append(inner_p, inner_after);
+
+        let outer_after = ast.new_text("外后");
+        ast.append(outer_p, outer_after);
+
+        assert_eq!(
+            render(&ast),
+            concat!(
+                "<p class=\"nm-p\">外前</p>",
+                "<div class=\"outer\">",
+                "<p class=\"nm-p\">内前</p>",
+                "<div class=\"inner\">最深</div>",
+                "<p class=\"nm-p\">内后</p>",
+                "</div>",
+                "<p class=\"nm-p\">外后</p>",
+            )
+        );
+    }
+
+    #[test]
+    fn a_break_does_not_leave_an_empty_paragraph_behind() {
+        // 打断之后没有更多行内内容时，不要吐出一个空的 <p></p>。
+        let mut ast = Ast::new();
+        let paragraph = ast.new_paragraph();
+        ast.push_block(paragraph);
+
+        let div = ast.new_element("div", Vec::new());
+        ast.append(paragraph, div);
+        let text = ast.new_text("x");
+        ast.append(div, text);
+
+        assert_eq!(render(&ast), "<div>x</div>");
+    }
+
+    #[test]
+    fn an_empty_paragraph_is_still_an_empty_paragraph() {
+        let mut ast = Ast::new();
+        let paragraph = ast.new_paragraph();
+        ast.push_block(paragraph);
+
+        assert_eq!(render(&ast), "<p class=\"nm-p\"></p>");
     }
 
     #[test]

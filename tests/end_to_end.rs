@@ -89,6 +89,25 @@ impl Handler for InlineBadge {
     }
 }
 
+/// 行内展开器：产出**块级**元素——最容易把 `<p>` 弄坏的做法。
+struct InlineDiv;
+
+impl Handler for InlineDiv {
+    fn expand_inline(
+        &self,
+        node: NodeId,
+        ast: &mut Ast,
+        _ctx: &mut Context<'_>,
+        _matched: &Matched<'_>,
+    ) -> Vec<NodeId> {
+        let element = ast.new_element("div", vec![neomark::Attr::new("class", "box")]);
+        for child in ast.children(node).collect::<Vec<_>>() {
+            ast.append(element, child);
+        }
+        vec![element]
+    }
+}
+
 #[test]
 fn a_plain_document_becomes_paragraphs() {
     assert_eq!(
@@ -497,6 +516,22 @@ fn the_first_line_content_is_trimmed_on_both_ends() {
     });
 
     assert_eq!(html, "<p class=\"nm-p\">[echo k=v]</p>");
+}
+#[test]
+fn a_block_element_from_an_inline_call_breaks_the_paragraph() {
+    // 行内调用展开出块级元素时，段落被**打断**，而不是产出 <p><div></p>。
+    let html = render_with("看 {{box: 内容}} 这里", |registry| {
+        registry.register("box", InlineDiv);
+    });
+
+    assert_eq!(
+        html,
+        concat!(
+            "<p class=\"nm-p\">看 </p>",
+            "<div class=\"box\">内容</div>",
+            "<p class=\"nm-p\"> 这里</p>",
+        )
+    );
 }
 
 #[test]
