@@ -45,7 +45,10 @@ pub fn parse_call_header(line: &str) -> CallHeader {
     let (head, content) = match find_separator(line) {
         Some(separator) => (
             &line[..separator],
-            Some(line[separator + 1..].trim_start().to_string()),
+            // 前后空白都裁掉：首行内容会作为**一行**重新参与切分，所以它必须
+            // 干净——`::func1: ::func2: ::func3:` 里的 `::func2: …` 要能被识别
+            // 成调用行，靠的就是这里没有前导空格。
+            Some(line[separator + 1..].trim().to_string()),
         ),
         None => (line, None),
     };
@@ -565,6 +568,17 @@ mod tests {
         let header = parse_call_header("::a title=\"x: y\": 首行");
         assert_eq!(header.params.get("title"), Some("x: y"));
         assert_eq!(header.content.as_deref(), Some("首行"));
+    }
+
+    #[test]
+    fn the_first_line_content_is_trimmed_on_both_ends() {
+        // 首行内容会作为「一行」重新参与切分，所以前后空白都不属于它
+        assert_eq!(
+            parse_call_header("::a:   内容   ").content.as_deref(),
+            Some("内容")
+        );
+        // 全空白等于没有内容
+        assert_eq!(parse_call_header("::a:    ").content, None);
     }
 
     #[test]

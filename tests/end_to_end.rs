@@ -67,6 +67,28 @@ impl Handler for EchoSignature {
     }
 }
 
+/// 行内展开器：把行内调用展开成一个模板实例（最容易踩到行内/块级标签的地方）。
+struct InlineBadge;
+
+impl Handler for InlineBadge {
+    fn expand_inline(
+        &self,
+        node: NodeId,
+        ast: &mut Ast,
+        _ctx: &mut Context<'_>,
+        _matched: &Matched<'_>,
+    ) -> Vec<NodeId> {
+        let (name, params, _) = ast.inline_call(node).unwrap();
+        let (name, params) = (name.to_string(), params.clone());
+
+        let instance = ast.new_instance(name, params);
+        for child in ast.children(node).collect::<Vec<_>>() {
+            ast.append(instance, child);
+        }
+        vec![instance]
+    }
+}
+
 #[test]
 fn a_plain_document_becomes_paragraphs() {
     assert_eq!(
@@ -441,6 +463,40 @@ fn the_common_derivations_need_no_closure_at_all() {
     });
 
     assert_eq!(html, "<h2 class=\"nm-h2\">标题</h2>");
+}
+#[test]
+fn an_instance_produced_inline_becomes_a_span_not_a_div() {
+    // 行内调用展开出的模板实例落在 <p> 里面：必须是 <span>，
+    // 否则就是 <p><div>…</div></p>——非法 HTML。
+    let html = render_with("看 {{badge: 新}} 这里", |registry| {
+        registry.register("badge", InlineBadge);
+    });
+
+    assert!(
+        html.contains("<span class=\"nm-instance nm-instance-badge\""),
+        "{html}"
+    );
+    assert!(!html.contains("<div"), "{html}");
+}
+
+#[test]
+fn a_block_only_expander_cannot_leak_a_block_element_inline() {
+    // `^h[1-6]$` 注册的是**块级**包装器（只实现了 expand_call）。行内调用命中
+    // 同一个展开器时会走 expand_inline，而它没实现 → 行内报错，绝不会产出 <h2>。
+    let html = render("看 {{h2: 标题}} 这里");
+
+    assert!(html.contains("nm-error-inline"), "{html}");
+    assert!(!html.contains("<h2"), "{html}");
+    assert!(!html.contains("<div"), "{html}");
+}
+
+#[test]
+fn the_first_line_content_is_trimmed_on_both_ends() {
+    let html = render_with("::echo   \"k\"=v   ", |registry| {
+        registry.register("echo", EchoSignature);
+    });
+
+    assert_eq!(html, "<p class=\"nm-p\">[echo k=v]</p>");
 }
 
 #[test]

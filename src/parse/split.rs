@@ -389,6 +389,15 @@ mod tests {
     }
 
     #[test]
+    fn a_first_line_can_open_nested_calls_on_the_same_line() {
+        let ast = parse("::func1: ::func2: ::func3:\n  test");
+        assert_eq!(
+            sexpr(&ast),
+            r#"(call func1 (call func2 (call func3 natural("test"))))"#
+        );
+    }
+
+    #[test]
     fn first_line_content_pins_the_common_indent_to_zero() {
         // 没有首行内容：块体的公共缩进（2）被去掉
         let ast = parse("::a:\n  一\n  二");

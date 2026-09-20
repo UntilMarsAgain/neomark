@@ -29,35 +29,51 @@ pub fn render(ast: &Ast) -> String {
         if index > 0 {
             out.push('\n');
         }
-        write_node(ast, *id, &mut out);
+        write_node(ast, *id, false, &mut out);
     }
 
     out
 }
 
-fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
+/// 渲染一个节点。
+///
+/// `inline` 表示**当前是否处在行内上下文**里（`<p>`、`<h1>`、`<a>` 里面）。
+/// 它由渲染器**自己写下的标签**决定——写 `<p>` 的那个调用点就知道孩子们是
+/// 行内的——所以不需要去猜父节点。
+///
+/// 它决定**同一个语义节点映射成哪个标签**：模板实例在块级位置是 `<div>`，
+/// 在行内位置必须是 `<span>`，否则 `<p>` 里会塞进 `<div>`（非法 HTML）。
+fn write_node(ast: &Ast, id: NodeId, inline: bool, out: &mut String) {
     match ast.kind(id) {
         Some(NodeKind::Document) => {
             for child in ast.children(id).collect::<Vec<_>>() {
-                write_node(ast, child, out);
+                write_node(ast, child, false, out);
             }
         }
 
         // ── 块级 ──
-        Some(NodeKind::Paragraph) => container(ast, id, "p", "nm-p", out),
-        Some(NodeKind::Heading { level }) => {
-            container(ast, id, &format!("h{level}"), &format!("nm-h{level}"), out)
+        // 段落与标题的**内容**是行内的。
+        Some(NodeKind::Paragraph) => container(ast, id, "p", "nm-p", true, out),
+        Some(NodeKind::Heading { level }) => container(
+            ast,
+            id,
+            &format!("h{level}"),
+            &format!("nm-h{level}"),
+            true,
+            out,
+        ),
+        Some(NodeKind::Instance { name, params }) => {
+            write_instance(ast, id, name, params, inline, out)
         }
-        Some(NodeKind::Instance { name, params }) => write_instance(ast, id, name, params, out),
 
         // ── 行内 ──
-        Some(NodeKind::Emphasis) => container(ast, id, "em", "nm-em", out),
-        Some(NodeKind::Strong) => container(ast, id, "strong", "nm-strong", out),
-        Some(NodeKind::Strikethrough) => container(ast, id, "del", "nm-del", out),
-        Some(NodeKind::Subscript) => container(ast, id, "sub", "nm-sub", out),
-        Some(NodeKind::Superscript) => container(ast, id, "sup", "nm-sup", out),
-        Some(NodeKind::Mark) => container(ast, id, "mark", "nm-mark", out),
-        Some(NodeKind::Code) => container(ast, id, "code", "nm-code-inline", out),
+        Some(NodeKind::Emphasis) => container(ast, id, "em", "nm-em", true, out),
+        Some(NodeKind::Strong) => container(ast, id, "strong", "nm-strong", true, out),
+        Some(NodeKind::Strikethrough) => container(ast, id, "del", "nm-del", true, out),
+        Some(NodeKind::Subscript) => container(ast, id, "sub", "nm-sub", true, out),
+        Some(NodeKind::Superscript) => container(ast, id, "sup", "nm-sup", true, out),
+        Some(NodeKind::Mark) => container(ast, id, "mark", "nm-mark", true, out),
+        Some(NodeKind::Code) => container(ast, id, "code", "nm-code-inline", true, out),
         Some(NodeKind::Math) => write_math(ast, id, out),
         Some(NodeKind::Icon(name)) => write_icon(name, out),
         Some(NodeKind::InlineCall { name, params, .. }) => {
@@ -67,20 +83,21 @@ fn write_node(ast: &Ast, id: NodeId, out: &mut String) {
         Some(NodeKind::Link { target }) => write_link(ast, id, target, out),
 
         // ── 逃生口 ──
-        Some(NodeKind::Element { tag, attrs }) => write_element(ast, id, tag, attrs, out),
+        Some(NodeKind::Element { tag, attrs }) => write_element(ast, id, tag, attrs, inline, out),
 
         // ── 内容 ──
         Some(NodeKind::Text(text)) => escape_text(text, out),
-        Some(NodeKind::Error(error)) => write_error(error, out),
+        // 报错自己可能已经知道落在行内；落在行内上下文里的一律按行内画。
+        Some(NodeKind::Error(error)) => write_error(error, inline, out),
         // 未解析的块本不该出现在这里——说明渲染之前没有跑调度器。
         // 宁可显眼地画出来，也不要静默丢内容。
-        Some(NodeKind::Unparsed(block)) => write_unparsed(block, out),
+        Some(NodeKind::Unparsed(block)) => write_unparsed(block, inline, out),
         None => {}
     }
 }
 
 /// 一个带 `nm-` 类名的普通元素。
-fn container(ast: &Ast, id: NodeId, tag: &str, class: &str, out: &mut String) {
+fn container(ast: &Ast, id: NodeId, tag: &str, class: &str, inner_inline: bool, out: &mut String) {
     out.push('<');
     out.push_str(tag);
     out.push_str(" class=\"");
@@ -88,7 +105,7 @@ fn container(ast: &Ast, id: NodeId, tag: &str, class: &str, out: &mut String) {
     out.push_str("\">");
 
     for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, out);
+        write_node(ast, child, inner_inline, out);
     }
 
     out.push_str("</");
@@ -100,10 +117,10 @@ fn container(ast: &Ast, id: NodeId, tag: &str, class: &str, out: &mut String) {
 ///
 /// 标签名先做合法性校验——它不是用户输入，但展开器写错了也会产出坏 HTML。
 /// 校验不过时**只输出孩子**，这样至少不丢内容。
-fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], out: &mut String) {
+fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], inline: bool, out: &mut String) {
     if !is_valid_attr_name(tag) {
         for child in ast.children(id).collect::<Vec<_>>() {
-            write_node(ast, child, out);
+            write_node(ast, child, inline, out);
         }
         return;
     }
@@ -118,7 +135,7 @@ fn write_element(ast: &Ast, id: NodeId, tag: &str, attrs: &[Attr], out: &mut Str
     }
 
     for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, out);
+        write_node(ast, child, inline, out);
     }
     out.push_str("</");
     out.push_str(tag);
@@ -162,7 +179,7 @@ fn write_link(ast: &Ast, id: NodeId, target: &str, out: &mut String) {
     out.push_str("\">");
 
     for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, out);
+        write_node(ast, child, true, out);
     }
 
     out.push_str("</a>");
@@ -175,7 +192,7 @@ fn write_link(ast: &Ast, id: NodeId, target: &str, out: &mut String) {
 fn write_math(ast: &Ast, id: NodeId, out: &mut String) {
     out.push_str("<span class=\"nm-math\">\\(");
     for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, out);
+        write_node(ast, child, true, out);
     }
     out.push_str("\\)</span>");
 }
@@ -217,7 +234,7 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
     if !children.is_empty() {
         out.push_str(": ");
         for child in children {
-            write_node(ast, child, out);
+            write_node(ast, child, true, out);
         }
     }
 
@@ -232,8 +249,21 @@ fn write_inline_call(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &m
 ///
 /// 参数键来自调用头部（**用户输入**），所以先做名字合法性校验；`data-`
 /// 前缀也顺带把 `onclick` 这类名字中和成无害的属性。
-fn write_instance(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut String) {
-    out.push_str("<div class=\"nm-instance nm-instance-");
+/// 模板实例：**按上下文选标签**。块级位置是 `<div>`，行内位置是 `<span>`——
+/// 行内调用展开出的实例落在 `<p>` 里面，用 `<div>` 就是非法 HTML。
+fn write_instance(
+    ast: &Ast,
+    id: NodeId,
+    name: &str,
+    params: &Params,
+    inline: bool,
+    out: &mut String,
+) {
+    let tag = if inline { "span" } else { "div" };
+
+    out.push('<');
+    out.push_str(tag);
+    out.push_str(" class=\"nm-instance nm-instance-");
     escape_attr(name, out);
     out.push_str("\" data-name=\"");
     escape_attr(name, out);
@@ -252,13 +282,17 @@ fn write_instance(ast: &Ast, id: NodeId, name: &str, params: &Params, out: &mut 
 
     out.push('>');
     for child in ast.children(id).collect::<Vec<_>>() {
-        write_node(ast, child, out);
+        write_node(ast, child, inline, out);
     }
-    out.push_str("</div>");
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
 }
 
-fn write_error(error: &ErrorNode, out: &mut String) {
-    if error.inline {
+fn write_error(error: &ErrorNode, inline: bool, out: &mut String) {
+    // 报错自己知道落在行内；此外，落在行内上下文里的报错一律按行内画，
+    // 否则就会在 <p> 里塞一个 <div>。
+    if error.inline || inline {
         return write_inline_error(error, out);
     }
 
@@ -292,11 +326,24 @@ fn write_inline_error(error: &ErrorNode, out: &mut String) {
     out.push_str("</span>");
 }
 
-fn write_unparsed(block: &Block, out: &mut String) {
+fn write_unparsed(block: &Block, inline: bool, out: &mut String) {
     let message = match block {
         Block::Call(call) => format!("未解析的调用块 ::{}", call.name),
         Block::Natural(_) => "未解析的自然块".to_string(),
     };
+
+    if inline {
+        // 同上：行内上下文里不能出现块级提示框。
+        out.push_str(
+            "<span class=\"nm-error-inline nm-error-unparsed\" data-kind=\"unparsed\" title=\"",
+        );
+        escape_attr(&message, out);
+        out.push_str("\">");
+        escape_text(&message, out);
+        out.push_str("</span>");
+        return;
+    }
+
     write_error_box("unparsed", &message, None, out);
 }
 
